@@ -47,7 +47,6 @@ INTERNAL_DATA_KEYS = {
 def _log_timing(company_name: str, stage: str, started_at: float) -> float:
 	elapsed = time.perf_counter() - started_at
 	message = f"[timing] company={company_name} stage={stage} took {elapsed:.2f}s"
-	print(message)
 	logger.info(message)
 	return elapsed
 

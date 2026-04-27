@@ -23,7 +23,6 @@ MAX_FIRECRAWL_FALLBACKS = 1
 
 def _debug_what_they_make(message: str, *args: Any) -> None:
     formatted = message % args if args else message
-    print(formatted)
     logger.info(formatted)
 
 try:
@@ -77,7 +76,7 @@ def fetch_page_firecrawl(url: str) -> str:
         text = str(data.get("markdown") or data.get("content") or "")
         return re.sub(r"\s+", " ", text).strip()[:MAX_CONTENT_CHARS]
     except Exception as exc:
-        print(f"[firecrawl] failed for {url}: {exc}")
+        logger.warning("[firecrawl] failed for %s: %s", url, exc)
         return ""
 
 
