@@ -37,6 +37,7 @@ server/
       ├─ aftermarket.py
       ├─ discovery.py
       ├─ enrichment.py
+      ├─ geography.py
       ├─ news.py
       ├─ people.py
       ├─ scraper.py
@@ -195,7 +196,28 @@ Outputs include:
 - `suggested_target_title`
 - `suggested_target_title_reasoning`
 
-### 8. Prompt Layer
+### 8. Geography Layer
+
+File:
+- `app/services/geography.py`
+
+Responsibilities:
+- Classifies HQ geography using only `hq_country`
+- Keeps the logic simple and deterministic
+- Adds no extra network calls or LLM calls
+
+Outputs:
+- `hq_geography_flag`
+- `hq_geography_region`
+- `hq_geography_reason`
+
+Current behavior:
+- `North America`, `Europe`, and `Japan` are treated as target markets
+- `China` is treated as a flagged market
+- everything else becomes `non_target_market`
+- missing `hq_country` becomes `unknown`
+
+### 9. Prompt Layer
 
 Folder:
 - `app/prompts/`
@@ -210,7 +232,7 @@ Files:
 - `prompts/scraper.py`
 - `prompts/synthesizer.py`
 
-### 9. LLM Client Layer
+### 10. LLM Client Layer
 
 Folder:
 - `app/llms/`
@@ -225,7 +247,7 @@ Current shared behavior:
 - Opening line generation uses Groq-based models
 - Qwen can be used as the primary Groq model for opening-line generation
 
-### 10. Cache Layer
+### 11. Cache Layer
 
 Folder:
 - `app/cache/`
@@ -322,6 +344,12 @@ Order:
 - CUFinder
 - Wikidata fallback for remaining stable fields
 
+### HQ Geography
+
+Order:
+- deterministic classification from `hq_country`
+- no fallback
+
 ### Website Content
 
 Order:
@@ -398,6 +426,9 @@ Example response:
     "industry": "Software Development",
     "official_name": "Industrility Software Incorporated",
     "parent_company": "Privately Held",
+    "hq_geography_flag": "target_market",
+    "hq_geography_region": "North America",
+    "hq_geography_reason": "Derived from hq_country",
     "source_url": "https://www.industrility.com",
     "fetch_method": "direct",
     "aftermarket_footprint": true,
@@ -420,6 +451,9 @@ Example response:
     "industry": "technology_checker",
     "official_name": "technology_checker",
     "parent_company": "technology_checker",
+    "hq_geography_flag": "hq_geography_classifier",
+    "hq_geography_region": "hq_geography_classifier",
+    "hq_geography_reason": "hq_geography_classifier",
     "source_url": "direct",
     "fetch_method": "direct",
     "aftermarket_footprint": "aftermarket_detector",
@@ -545,6 +579,7 @@ These logs help identify whether the main latency comes from:
 - Prompts are stored centrally in `app/prompts/`
 - LLM setup is stored centrally in `app/llms/`
 - SQLite full-response caching is stored centrally in `app/cache/`
+- HQ geography is derived deterministically from `hq_country`
 - Aftermarket detection is optimized for first useful clue, not exhaustive mapping
 - Technology Checker descriptions are shortened before merge
 - Website descriptions and LLM descriptions use separate length rules

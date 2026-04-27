@@ -23,6 +23,7 @@ from app.prompts import build_opening_line_prompt, build_synthesis_prompt
 from app.services.aftermarket import detect_aftermarket
 from app.services.discovery import parse_wikidata_company, resolve_official_domain
 from app.services.enrichment import enrich_company
+from app.services.geography import classify_hq_geography
 from app.services.people import find_key_person
 from app.services.scraper import extract_what_they_make_from_text as extract_what_they_make
 from app.services.scraper import get_about_page_text
@@ -437,6 +438,15 @@ def _merge_enrichment_fields(data: dict[str, Any], field_sources: dict[str, str]
 	)
 
 
+def _apply_hq_geography(data: dict[str, Any], field_sources: dict[str, str]) -> None:
+	geography = classify_hq_geography(data.get("hq_country"))
+	for key, value in geography.items():
+		if _is_empty(value):
+			continue
+		data[key] = value
+		field_sources[key] = "hq_geography_classifier"
+
+
 def _unpack_enrichment_result(enrich_result: Any, notes: list[str]) -> tuple[dict[str, Any], dict[str, str]]:
 	if isinstance(enrich_result, Exception):
 		notes.append(f"Enrichment failed: {enrich_result}")
@@ -709,6 +719,7 @@ async def research_company(
 		field_sources,
 	)
 	_log_timing(company_name, "step2_parallel_services", stage_started_at)
+	_apply_hq_geography(data, field_sources)
 	aftermarket_data = {
 		"aftermarket_footprint": data.get("aftermarket_footprint"),
 		"parts_page": data.get("parts_page"),
