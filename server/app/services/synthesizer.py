@@ -9,6 +9,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from app.cache import get_cached_research_response, set_cached_research_response
 from app.config import GROQ_API_KEY
 from app.llms import (
 	HAS_LLM,
@@ -677,6 +678,17 @@ async def research_company(
 	requested_fields: list[str] | None = None,
 ) -> ResearchResponse:
 	total_started_at = time.perf_counter()
+
+	cached_payload = await asyncio.to_thread(
+		get_cached_research_response,
+		company_name,
+		extra_context,
+		requested_fields,
+	)
+	if isinstance(cached_payload, dict):
+		_log_timing(company_name, "total_research_cache_hit", total_started_at)
+		return ResearchResponse(**cached_payload)
+
 	notes: list[str] = []
 	sources: list[str] = []
 	data: dict[str, Any] = {}
@@ -738,7 +750,7 @@ async def research_company(
 	total_elapsed = _log_timing(company_name, "total_research", total_started_at)
 	notes.append(f"Timing total_research={total_elapsed:.2f}s")
 
-	return ResearchResponse(
+	response = ResearchResponse(
 		company_name=company_name,
 		resolved_domain=resolved_domain,
 		data=data,
@@ -746,3 +758,11 @@ async def research_company(
 		sources=sources,
 		notes=notes,
 	)
+	await asyncio.to_thread(
+		set_cached_research_response,
+		company_name,
+		extra_context,
+		requested_fields,
+		response.model_dump(),
+	)
+	return response

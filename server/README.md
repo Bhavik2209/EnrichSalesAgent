@@ -16,6 +16,9 @@ server/
 ├─ README.md
 └─ app/
    ├─ __init__.py
+   ├─ cache/
+   │  ├─ __init__.py
+   │  └─ sqlite_cache.py
    ├─ config.py
    ├─ main.py
    ├─ models.py
@@ -222,6 +225,25 @@ Current shared behavior:
 - Opening line generation uses Groq-based models
 - Qwen can be used as the primary Groq model for opening-line generation
 
+### 10. Cache Layer
+
+Folder:
+- `app/cache/`
+
+Responsibilities:
+- Caches the final `ResearchResponse` in SQLite
+- Avoids repeating the full research pipeline for the same company input
+- Uses TTL-based expiry
+
+Current behavior:
+- Cache key includes normalized:
+  - `company_name`
+  - `extra_context`
+  - `requested_fields`
+- Cache is checked at the beginning of `research_company(...)`
+- On hit, the final response is returned immediately
+- On miss, the pipeline runs normally and the final response is stored
+
 ## What Runs in Parallel
 
 Inside `synthesizer.py`, the main step-2 services run in parallel:
@@ -235,6 +257,40 @@ This happens using `asyncio.gather(...)`.
 Important note:
 - The whole parallel block still waits for the slowest branch to finish.
 - That means total time for step 2 is controlled by the slowest service, not the average.
+
+## Caching
+
+The backend uses a SQLite full-response cache.
+
+Why this approach:
+- easy to add
+- no extra infrastructure
+- persists across server restarts
+- good fit for repeated company lookups
+
+What is cached:
+- the final `ResearchResponse`
+
+Where it is cached:
+- default file: `server/research_cache.sqlite3`
+
+How it is keyed:
+- normalized company name
+- normalized extra context
+- requested fields
+
+Default TTL:
+- `86400` seconds
+- effectively `24 hours`
+
+Cache behavior:
+- repeated requests for the same normalized input can return immediately
+- cache hits append a note like `Cache hit sqlite age_seconds=...`
+- stale cache rows are ignored and removed on read
+
+Recommended use:
+- good for repeated demos, research retries, and UI refreshes
+- especially useful because this backend depends on several external APIs and website fetches
 
 ## What Runs Sequentially
 
@@ -402,6 +458,8 @@ Common keys used by the backend:
 - `TECHNOLOGY_CHECKER_API_KEY`
 - `HUNTER_API_KEY`
 - `USER_AGENT`
+- `CACHE_DB_PATH`
+- `CACHE_TTL_SECONDS`
 
 Optional model overrides:
 
@@ -409,6 +467,14 @@ Optional model overrides:
 - `GROQ_MODEL`
 - `OPENING_LINE_PRIMARY_GROQ_MODEL`
 - `OPENING_LINE_SECONDARY_GROQ_MODEL`
+
+Cache configuration:
+- `CACHE_DB_PATH`
+  - path to the SQLite cache file
+  - default: `server/research_cache.sqlite3`
+- `CACHE_TTL_SECONDS`
+  - cache expiry in seconds
+  - default: `86400`
 
 ## Running the Backend
 
@@ -478,6 +544,7 @@ These logs help identify whether the main latency comes from:
 
 - Prompts are stored centrally in `app/prompts/`
 - LLM setup is stored centrally in `app/llms/`
+- SQLite full-response caching is stored centrally in `app/cache/`
 - Aftermarket detection is optimized for first useful clue, not exhaustive mapping
 - Technology Checker descriptions are shortened before merge
 - Website descriptions and LLM descriptions use separate length rules
@@ -489,4 +556,3 @@ These logs help identify whether the main latency comes from:
 - Provider quality can vary by company and website quality
 - Some fields are heuristic when no authoritative source exists
 - If external APIs are rate-limited or unavailable, fallback quality may be lower
-
