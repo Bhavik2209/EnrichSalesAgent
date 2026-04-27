@@ -14,6 +14,7 @@ from app.config import (
 	SESSION,
 	TECHNOLOGY_CHECKER_API_KEY,
 )
+from app.prompts import ENRICHMENT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +41,6 @@ SOURCE_LABELS = {
 	"get_cufinder_revenue": "cufinder_car",
 	"get_cufinder_employee_count": "cufinder_cec",
 }
-
-SYSTEM_PROMPT = (
-	"You are a company data enrichment agent. You will be given a company name, domain, and a dict of "
-	"fields already known from Wikidata. Your job is to fill in the missing or stale fields by calling the "
-	"available tools. Rules:\n"
-	"- Always call enrich_from_technology_checker first.\n"
-	"- Only call CUFinder tools if Technology Checker did not return the specific field you need.\n"
-	"- Always call get_cufinder_revenue and get_cufinder_employee_count regardless of what Technology Checker "
-	"returned, because these values change frequently and need to be current.\n"
-	"- Never call more tools than necessary.\n"
-	"- Return a final JSON object with all fields you were able to fill."
-)
 
 try:
 	from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -392,7 +381,7 @@ def build_enrichment_agent() -> dict[str, Any] | None:
 	return {
 		"llm": bound_llm,
 		"tools": {tool_obj.name: tool_obj for tool_obj in tools},
-		"system_prompt": SYSTEM_PROMPT,
+		"system_prompt": ENRICHMENT_SYSTEM_PROMPT,
 	}
 
 

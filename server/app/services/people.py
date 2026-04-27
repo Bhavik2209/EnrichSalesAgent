@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.config import GEMINI_API_KEY, GROQ_API_KEY, HUNTER_API_KEY, REQUEST_TIMEOUT, SESSION
+from app.prompts import build_people_title_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -223,20 +224,6 @@ def _extract_json_dict(text: Any) -> dict[str, Any]:
 	return {}
 
 
-def _build_title_prompt(company_name: str, resolved_domain: str, aftermarket_data: dict[str, Any], enrichment_data: dict[str, Any]) -> str:
-	return (
-		"You are selecting the best target job title for a B2B trade-show outreach workflow.\n"
-		"Choose the single most relevant role to approach when a real person's name could not be found.\n"
-		"Prefer roles in aftermarket, service, parts, sales, commercial, or business development.\n"
-		"Return JSON only with exactly these fields: suggested_title, reasoning.\n"
-		"If aftermarket/service signals are present, bias toward those functions over generic sales roles.\n\n"
-		f"Company: {company_name}\n"
-		f"Domain: {resolved_domain}\n"
-		f"Aftermarket data: {json.dumps(aftermarket_data, ensure_ascii=True)}\n"
-		f"Enrichment data: {json.dumps(enrichment_data, ensure_ascii=True)}\n"
-	)
-
-
 def _invoke_title_llm(prompt: str) -> dict[str, Any]:
 	if not HAS_LLM:
 		return {}
@@ -265,7 +252,7 @@ def suggest_title_with_llm(
 	aftermarket_data: dict[str, Any],
 	enrichment_data: dict[str, Any],
 ) -> dict[str, str]:
-	prompt = _build_title_prompt(company_name, resolved_domain, aftermarket_data, enrichment_data)
+	prompt = build_people_title_prompt(company_name, resolved_domain, aftermarket_data, enrichment_data)
 	result = _invoke_title_llm(prompt)
 	title = _normalize_text(result.get("suggested_title")) if isinstance(result, dict) else None
 	reasoning = _normalize_text(result.get("reasoning")) if isinstance(result, dict) else None

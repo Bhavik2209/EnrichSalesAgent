@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from app.config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL
 from app.models import ResearchResponse
+from app.prompts import build_opening_line_prompt, build_synthesis_prompt
 from app.services.aftermarket import detect_aftermarket
 from app.services.discovery import parse_wikidata_company, resolve_official_domain
 from app.services.enrichment import enrich_company
@@ -249,39 +250,6 @@ def _build_opening_line(company_name: str, data: dict[str, Any]) -> str | None:
 	return None
 
 
-def _build_opening_line_prompt(company_name: str, data: dict[str, Any]) -> str:
-	context = {
-		"official_name": _clean_for_sentence(data.get("official_name"), max_len=120) or None,
-		"description": _clean_for_sentence(data.get("description"), max_len=180) or None,
-		"industry": _clean_for_sentence(data.get("industry"), max_len=120) or None,
-		"what_they_make": _clean_for_sentence(data.get("what_they_make"), max_len=120) or None,
-		"hq_country": _clean_for_sentence(data.get("hq_country"), max_len=80) or None,
-		"hq_city": _clean_for_sentence(data.get("hq_city"), max_len=80) or None,
-		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,
-		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
-		"recent_news_titles": [
-			_clean_for_sentence(item.get("title"), max_len=140)
-			for item in (data.get("recent_news") or [])
-			if isinstance(item, dict) and _clean_for_sentence(item.get("title"), max_len=140)
-		][:3],
-	}
-	return (
-		"You write short B2B outreach opening lines for sales research.\n"
-		"Using only the structured company context below, write one personalized opening line.\n"
-		"Return JSON only with exactly one key: personalized_opening_line.\n"
-		"Requirements:\n"
-		"- One sentence only.\n"
-		"- 22 to 38 words.\n"
-		"- Sound natural and specific, not robotic.\n"
-		"- Use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
-		"- Do not repeat awkward Wikidata labels like 'United States manufacturing company' or generic phrases like 'is focused on'.\n"
-		"- End by connecting to service, aftermarket, parts, support, or digital transformation.\n"
-		"- Do not invent facts.\n\n"
-		f"Company: {company_name}\n"
-		f"Context: {json.dumps(context, ensure_ascii=True)}"
-	)
-
-
 def _normalize_opening_line_candidate(raw: Any, company_name: str) -> str | None:
 	if isinstance(raw, dict):
 		raw = raw.get("personalized_opening_line")
@@ -323,7 +291,22 @@ def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> 
 	if not HAS_LLM:
 		return (None, None)
 
-	prompt = _build_opening_line_prompt(company_name, data)
+	prompt_data = {
+		"official_name": _clean_for_sentence(data.get("official_name"), max_len=120) or None,
+		"description": _clean_for_sentence(data.get("description"), max_len=180) or None,
+		"industry": _clean_for_sentence(data.get("industry"), max_len=120) or None,
+		"what_they_make": _clean_for_sentence(data.get("what_they_make"), max_len=120) or None,
+		"hq_country": _clean_for_sentence(data.get("hq_country"), max_len=80) or None,
+		"hq_city": _clean_for_sentence(data.get("hq_city"), max_len=80) or None,
+		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,
+		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
+		"recent_news_titles": [
+			_clean_for_sentence(item.get("title"), max_len=140)
+			for item in (data.get("recent_news") or [])
+			if isinstance(item, dict) and _clean_for_sentence(item.get("title"), max_len=140)
+		][:3],
+	}
+	prompt = build_opening_line_prompt(company_name, prompt_data)
 	candidates: list[tuple[str, str]] = []
 	for model_name in dict.fromkeys([OPENING_LINE_PRIMARY_GROQ_MODEL, OPENING_LINE_SECONDARY_GROQ_MODEL]):
 		if model_name:
@@ -357,18 +340,6 @@ def _run_sync_or_async_in_thread(func: Any, *args: Any) -> Any:
 	if asyncio.iscoroutine(result):
 		return asyncio.run(result)
 	return result
-
-
-def _build_llm_prompt(company_name: str, missing_fields: list[str], combined_text: str) -> str:
-	return (
-		"You are extracting company information. Using only the text below,\n"
-		"fill in the missing fields. Return valid JSON only, no markdown.\n"
-		"If a field cannot be determined from the text, return null for it.\n\n"
-		f"Company: {company_name}\n"
-		f"Missing fields to fill: {missing_fields}\n\n"
-		"SOURCE TEXT:\n"
-		f"{combined_text[:6000]}"
-	)
 
 
 def _invoke_gemini(prompt: str) -> dict[str, Any]:
@@ -405,7 +376,7 @@ def run_llm_synthesis(
 	if not combined_text:
 		return {}
 
-	prompt = _build_llm_prompt(company_name, missing_fields, combined_text)
+	prompt = build_synthesis_prompt(company_name, missing_fields, combined_text)
 	try:
 		result = _invoke_gemini(prompt)
 		if not result:
