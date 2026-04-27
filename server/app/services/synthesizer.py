@@ -4,13 +4,19 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-import os
 import re
 import time
 from typing import Any
 from urllib.parse import urlparse
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL
+from app.config import GROQ_API_KEY
+from app.llms import (
+	HAS_LLM,
+	OPENING_LINE_PRIMARY_GROQ_MODEL,
+	OPENING_LINE_SECONDARY_GROQ_MODEL,
+	build_default_json_llm,
+	build_groq_llm,
+)
 from app.models import ResearchResponse
 from app.prompts import build_opening_line_prompt, build_synthesis_prompt
 from app.services.aftermarket import detect_aftermarket
@@ -21,16 +27,6 @@ from app.services.scraper import extract_what_they_make_from_text as extract_wha
 from app.services.scraper import get_about_page_text
 
 logger = logging.getLogger(__name__)
-
-try:
-	from langchain_groq import ChatGroq  # type: ignore[import-not-found]
-	from langchain_google_genai import ChatGoogleGenerativeAI
-
-	HAS_LLM = True
-except Exception:
-	ChatGoogleGenerativeAI = ChatGroq = None  # type: ignore[assignment]
-	HAS_LLM = False
-
 
 WIKIDATA_PRIORITY_FIELDS = {
 	"official_name",
@@ -47,10 +43,6 @@ INTERNAL_DATA_KEYS = {
 	"_parent_entity_id",
 	"_industry_entity_id",
 }
-
-OPENING_LINE_PRIMARY_GROQ_MODEL = os.getenv("OPENING_LINE_PRIMARY_GROQ_MODEL", "qwen/qwen3-32b").strip() or "qwen/qwen3-32b"
-OPENING_LINE_SECONDARY_GROQ_MODEL = os.getenv("OPENING_LINE_SECONDARY_GROQ_MODEL", GROQ_MODEL).strip() or GROQ_MODEL
-
 
 def _log_timing(company_name: str, stage: str, started_at: float) -> float:
 	elapsed = time.perf_counter() - started_at
@@ -278,7 +270,9 @@ def _normalize_opening_line_candidate(raw: Any, company_name: str) -> str | None
 def _invoke_groq_model(prompt: str, model_name: str) -> dict[str, Any]:
 	if not (HAS_LLM and GROQ_API_KEY):
 		return {}
-	llm = ChatGroq(model=model_name, groq_api_key=GROQ_API_KEY, temperature=0)
+	llm = build_groq_llm(model=model_name, temperature=0)
+	if llm is None:
+		return {}
 	response = llm.invoke(prompt)
 	return _extract_json_obj(getattr(response, "content", ""))
 
@@ -343,14 +337,9 @@ def _run_sync_or_async_in_thread(func: Any, *args: Any) -> Any:
 
 
 def _invoke_gemini(prompt: str) -> dict[str, Any]:
-	if not (HAS_LLM and GEMINI_API_KEY):
+	llm = build_default_json_llm(temperature=0)
+	if llm is None:
 		return {}
-	llm = ChatGoogleGenerativeAI(
-		model=GEMINI_MODEL,
-		google_api_key=GEMINI_API_KEY,
-		temperature=0,
-		response_mime_type="application/json",
-	)
 	response = llm.invoke(prompt)
 	return _extract_json_obj(getattr(response, "content", ""))
 
@@ -358,7 +347,9 @@ def _invoke_gemini(prompt: str) -> dict[str, Any]:
 def _invoke_groq(prompt: str) -> dict[str, Any]:
 	if not (HAS_LLM and GROQ_API_KEY):
 		return {}
-	llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
+	llm = build_groq_llm(temperature=0)
+	if llm is None:
+		return {}
 	response = llm.invoke(prompt)
 	return _extract_json_obj(getattr(response, "content", ""))
 

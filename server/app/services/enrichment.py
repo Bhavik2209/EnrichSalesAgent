@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 
@@ -14,12 +13,10 @@ from app.config import (
 	SESSION,
 	TECHNOLOGY_CHECKER_API_KEY,
 )
+from app.llms import HAS_LLM, build_default_llm
 from app.prompts import ENRICHMENT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 STABLE_FIELDS = [
 	"official_name",
@@ -45,10 +42,8 @@ SOURCE_LABELS = {
 try:
 	from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 	from langchain_core.tools import tool
-	from langchain_google_genai import ChatGoogleGenerativeAI
-	from langchain_groq import ChatGroq  # type: ignore[import-not-found]
 
-	LANGCHAIN_AVAILABLE = True
+	LANGCHAIN_AVAILABLE = HAS_LLM
 except Exception:
 	LANGCHAIN_AVAILABLE = False
 	HumanMessage = SystemMessage = ToolMessage = None  # type: ignore[assignment]
@@ -354,10 +349,7 @@ def build_enrichment_agent() -> dict[str, Any] | None:
 
 	llm = None
 	try:
-		if GEMINI_API_KEY:
-			llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0)
-		elif GROQ_API_KEY:
-			llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
+		llm = build_default_llm(temperature=0)
 	except Exception as exc:
 		logger.warning("Failed to initialize LLM client: %s", exc)
 		llm = None

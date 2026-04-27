@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -10,7 +9,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from app.config import FIRECRAWL_API_KEY, FIRECRAWL_TIMEOUT, GEMINI_API_KEY, GROQ_API_KEY, MAX_CONTENT_CHARS, REQUEST_TIMEOUT, SESSION
+from app.config import FIRECRAWL_API_KEY, FIRECRAWL_TIMEOUT, MAX_CONTENT_CHARS, REQUEST_TIMEOUT, SESSION
+from app.llms import HAS_LLM, build_default_llm
 from app.prompts import SCRAPER_PROFILE_PROMPT_TEMPLATE, SCRAPER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -29,10 +29,8 @@ def _debug_what_they_make(message: str, *args: Any) -> None:
 try:
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
     from langchain_core.tools import tool
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    from langchain_groq import ChatGroq  # type: ignore[import-not-found]
 
-    HAS_LANGCHAIN = True
+    HAS_LANGCHAIN = HAS_LLM
 except Exception:
     HAS_LANGCHAIN = False
 
@@ -41,10 +39,6 @@ except Exception:
             return func
 
         return _decorator
-
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash"); GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
 
 @tool
 def fetch_page_direct(url: str) -> str:
@@ -242,9 +236,7 @@ def _invoke_profile_llm(text: str) -> dict[str, Any]:
         return {}
 
     prompt = SCRAPER_PROFILE_PROMPT_TEMPLATE.format(input_text=_clean_markdown_profile_text(text)[:2500])
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0) if GEMINI_API_KEY else None
-    if llm is None and GROQ_API_KEY:
-        llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
+    llm = build_default_llm(temperature=0)
     if llm is None:
         return {}
 
@@ -259,9 +251,7 @@ def _invoke_profile_llm(text: str) -> dict[str, Any]:
 def build_scraper_agent() -> dict[str, Any] | None:
     if not HAS_LANGCHAIN:
         return None
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0) if GEMINI_API_KEY else None
-    if llm is None and GROQ_API_KEY:
-        llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
+    llm = build_default_llm(temperature=0)
     if llm is None:
         return None
     tools = [fetch_page_direct, fetch_page_firecrawl, extract_what_they_make_from_text]

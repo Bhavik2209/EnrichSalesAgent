@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 from urllib.parse import urlparse
 
-from app.config import GEMINI_API_KEY, GROQ_API_KEY, HUNTER_API_KEY, REQUEST_TIMEOUT, SESSION
+from app.config import HUNTER_API_KEY, REQUEST_TIMEOUT, SESSION
+from app.llms import HAS_LLM, build_default_json_llm
 from app.prompts import build_people_title_prompt
 
 logger = logging.getLogger(__name__)
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 PREFERRED_TITLE_KEYWORDS = (
 	"aftermarket",
@@ -30,16 +27,6 @@ PREFERRED_TITLE_KEYWORDS = (
 )
 
 PREFERRED_SENIORITY = {"executive", "director", "vp"}
-
-try:
-	from langchain_google_genai import ChatGoogleGenerativeAI
-	from langchain_groq import ChatGroq  # type: ignore[import-not-found]
-
-	HAS_LLM = True
-except Exception:
-	ChatGoogleGenerativeAI = ChatGroq = None  # type: ignore[assignment]
-	HAS_LLM = False
-
 
 def extract_domain(value: str) -> str:
 	try:
@@ -228,19 +215,11 @@ def _invoke_title_llm(prompt: str) -> dict[str, Any]:
 	if not HAS_LLM:
 		return {}
 	try:
-		if GEMINI_API_KEY:
-			llm = ChatGoogleGenerativeAI(
-				model=GEMINI_MODEL,
-				google_api_key=GEMINI_API_KEY,
-				temperature=0,
-				response_mime_type="application/json",
-			)
-			response = llm.invoke(prompt)
-			return _extract_json_dict(getattr(response, "content", ""))
-		if GROQ_API_KEY:
-			llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
-			response = llm.invoke(prompt)
-			return _extract_json_dict(getattr(response, "content", ""))
+		llm = build_default_json_llm(temperature=0)
+		if llm is None:
+			return {}
+		response = llm.invoke(prompt)
+		return _extract_json_dict(getattr(response, "content", ""))
 	except Exception as exc:
 		logger.warning("Title suggestion LLM failed: %s", exc)
 	return {}
