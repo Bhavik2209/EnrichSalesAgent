@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -13,7 +15,7 @@ from app.models import ResearchResponse
 from app.services.aftermarket import detect_aftermarket
 from app.services.discovery import parse_wikidata_company, resolve_official_domain
 from app.services.enrichment import enrich_company
-from app.services.news import find_recent_news
+from app.services.people import find_key_person
 from app.services.scraper import extract_what_they_make_from_text as extract_what_they_make
 from app.services.scraper import get_about_page_text
 
@@ -45,6 +47,9 @@ INTERNAL_DATA_KEYS = {
 	"_industry_entity_id",
 }
 
+OPENING_LINE_PRIMARY_GROQ_MODEL = os.getenv("OPENING_LINE_PRIMARY_GROQ_MODEL", "qwen/qwen3-32b").strip() or "qwen/qwen3-32b"
+OPENING_LINE_SECONDARY_GROQ_MODEL = os.getenv("OPENING_LINE_SECONDARY_GROQ_MODEL", GROQ_MODEL).strip() or GROQ_MODEL
+
 
 def _log_timing(company_name: str, stage: str, started_at: float) -> float:
 	elapsed = time.perf_counter() - started_at
@@ -54,11 +59,49 @@ def _log_timing(company_name: str, stage: str, started_at: float) -> float:
 	return elapsed
 
 
+def _timed_call(company_name: str, stage: str, func: Any, *args: Any) -> Any:
+	started_at = time.perf_counter()
+	try:
+		return func(*args)
+	finally:
+		_log_timing(company_name, stage, started_at)
+
+
 def _is_empty(value: Any) -> bool:
 	if value is None:
 		return True
 	if isinstance(value, str):
 		return value.strip() == ""
+	return False
+
+
+def _is_weak_description(value: Any) -> bool:
+	text = re.sub(r"\s+", " ", str(value or "")).strip().strip(".").lower()
+	if not text:
+		return True
+
+	generic_exact = {
+		"company",
+		"corporation",
+		"manufacturer",
+		"business",
+		"enterprise",
+		"organization",
+	}
+	if text in generic_exact:
+		return True
+
+	if re.fullmatch(r"(?:[a-z]+\s+)?company", text):
+		return True
+	if re.fullmatch(r"(?:[a-z]+\s+)?corporation", text):
+		return True
+	if re.fullmatch(r"(?:[a-z]+\s+)?manufacturer", text):
+		return True
+
+	words = text.split()
+	if len(words) <= 3 and any(word in {"company", "corporation", "manufacturer", "business"} for word in words):
+		return True
+
 	return False
 
 
@@ -86,6 +129,13 @@ def merge_into(
 	for key, value in source.items():
 		if _is_empty(value):
 			continue
+		if key == "description":
+			if _is_weak_description(value) and not _is_empty(target.get(key)):
+				continue
+			if key in skip_if_present and not _is_empty(target.get(key)) and _is_weak_description(target.get(key)):
+				target[key] = value
+				field_sources[key] = _source_label_for_key(source_label, key, "unknown")
+				continue
 		if key in skip_if_present and not _is_empty(target.get(key)):
 			continue
 		target[key] = value
@@ -135,6 +185,49 @@ def _clean_for_sentence(value: Any, max_len: int = 160) -> str:
 	return text[:max_len].strip()
 
 
+def _search_result_description_fallback(resolved_domain: str | None, search_results: Any) -> str | None:
+	if not isinstance(search_results, list):
+		return None
+
+	resolved_host = ""
+	resolved_root = ""
+	if resolved_domain:
+		normalized = _normalize_domain_url(resolved_domain)
+		if normalized:
+			parsed = urlparse(normalized)
+			resolved_host = parsed.netloc.lower()
+			resolved_root = normalized.rstrip("/").lower()
+
+	best_snippet = None
+	best_score = -1
+	for item in search_results:
+		if not isinstance(item, dict):
+			continue
+		snippet = _clean_for_sentence(item.get("snippet"), max_len=220)
+		if _is_empty(snippet) or _is_weak_description(snippet):
+			continue
+		score = len(snippet)
+		url = str(item.get("url") or "").strip()
+		url_l = url.lower()
+		parsed_url = urlparse(url if url.startswith("http") else f"https://{url}")
+		path = parsed_url.path or "/"
+		if resolved_host and resolved_host in url:
+			score += 200
+		if resolved_root and url_l.rstrip("/") == resolved_root:
+			score += 300
+		if path in {"", "/"}:
+			score += 120
+		else:
+			score -= min(len(path), 120)
+		if any(keyword in snippet.lower() for keyword in ("manufacturer", "manufacture", "provides", "offers", "automation", "pneumatic", "products")):
+			score += 180
+		if len(snippet) > 40 and score > best_score:
+			best_snippet = snippet
+			best_score = score
+
+	return best_snippet
+
+
 def _build_opening_line(company_name: str, data: dict[str, Any]) -> str | None:
 	recent_news = data.get("recent_news", [])
 	if isinstance(recent_news, list):
@@ -150,10 +243,113 @@ def _build_opening_line(company_name: str, data: dict[str, Any]) -> str | None:
 		return f"I saw that {company_name} makes {what_they_make}, and I’d love to hear how you’re thinking about service, support, and aftermarket growth around that portfolio."
 
 	description = _clean_for_sentence(data.get("description"), max_len=120)
-	if description:
+	if description and not _is_weak_description(description):
 		return f"I noticed that {company_name} is focused on {description.lower()}, and I’d love to hear where service and digital transformation are landing for your team right now."
 
 	return None
+
+
+def _build_opening_line_prompt(company_name: str, data: dict[str, Any]) -> str:
+	context = {
+		"official_name": _clean_for_sentence(data.get("official_name"), max_len=120) or None,
+		"description": _clean_for_sentence(data.get("description"), max_len=180) or None,
+		"industry": _clean_for_sentence(data.get("industry"), max_len=120) or None,
+		"what_they_make": _clean_for_sentence(data.get("what_they_make"), max_len=120) or None,
+		"hq_country": _clean_for_sentence(data.get("hq_country"), max_len=80) or None,
+		"hq_city": _clean_for_sentence(data.get("hq_city"), max_len=80) or None,
+		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,
+		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
+		"recent_news_titles": [
+			_clean_for_sentence(item.get("title"), max_len=140)
+			for item in (data.get("recent_news") or [])
+			if isinstance(item, dict) and _clean_for_sentence(item.get("title"), max_len=140)
+		][:3],
+	}
+	return (
+		"You write short B2B outreach opening lines for sales research.\n"
+		"Using only the structured company context below, write one personalized opening line.\n"
+		"Return JSON only with exactly one key: personalized_opening_line.\n"
+		"Requirements:\n"
+		"- One sentence only.\n"
+		"- 22 to 38 words.\n"
+		"- Sound natural and specific, not robotic.\n"
+		"- Use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
+		"- Do not repeat awkward Wikidata labels like 'United States manufacturing company' or generic phrases like 'is focused on'.\n"
+		"- End by connecting to service, aftermarket, parts, support, or digital transformation.\n"
+		"- Do not invent facts.\n\n"
+		f"Company: {company_name}\n"
+		f"Context: {json.dumps(context, ensure_ascii=True)}"
+	)
+
+
+def _normalize_opening_line_candidate(raw: Any, company_name: str) -> str | None:
+	if isinstance(raw, dict):
+		raw = raw.get("personalized_opening_line")
+	text = re.sub(r"\s+", " ", str(raw or "")).strip().strip('"').strip("'")
+	if not text:
+		return None
+	if not text.endswith((".", "?", "!")):
+		text = f"{text}."
+	lower = text.lower()
+	rejected_fragments = (
+		"united states manufacturing company",
+		"is focused on",
+		"leading company",
+		"great company",
+		"i noticed that",
+	)
+	if any(fragment in lower for fragment in rejected_fragments):
+		return None
+	if company_name.lower() not in lower:
+		return None
+	if len(text.split()) < 12:
+		return None
+	return text
+
+
+def _invoke_groq_model(prompt: str, model_name: str) -> dict[str, Any]:
+	if not (HAS_LLM and GROQ_API_KEY):
+		return {}
+	llm = ChatGroq(model=model_name, groq_api_key=GROQ_API_KEY, temperature=0)
+	response = llm.invoke(prompt)
+	return _extract_json_obj(getattr(response, "content", ""))
+
+
+def _invoke_opening_line_groq_model(prompt: str, company_name: str, model_name: str) -> str | None:
+	return _normalize_opening_line_candidate(_invoke_groq_model(prompt, model_name), company_name)
+
+
+def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
+	if not HAS_LLM:
+		return (None, None)
+
+	prompt = _build_opening_line_prompt(company_name, data)
+	candidates: list[tuple[str, str]] = []
+	for model_name in dict.fromkeys([OPENING_LINE_PRIMARY_GROQ_MODEL, OPENING_LINE_SECONDARY_GROQ_MODEL]):
+		if model_name:
+			candidates.append((f"groq:{model_name}", model_name))
+	if not candidates:
+		return (None, None)
+
+	try:
+		with concurrent.futures.ThreadPoolExecutor(max_workers=len(candidates)) as executor:
+			future_map = {
+				executor.submit(_invoke_opening_line_groq_model, prompt, company_name, model_name): provider
+				for provider, model_name in candidates
+			}
+			for future in concurrent.futures.as_completed(future_map):
+				provider = future_map[future]
+				try:
+					line = future.result()
+				except Exception as exc:
+					logger.warning("Opening line generation failed with %s for %s: %s", provider, company_name, exc)
+					continue
+				if line:
+					return (line, provider)
+	except Exception as exc:
+		logger.warning("Parallel opening line generation failed for %s: %s", company_name, exc)
+
+	return (None, None)
 
 
 def _run_sync_or_async_in_thread(func: Any, *args: Any) -> Any:
@@ -182,7 +378,7 @@ def _invoke_gemini(prompt: str) -> dict[str, Any]:
 		model=GEMINI_MODEL,
 		google_api_key=GEMINI_API_KEY,
 		temperature=0,
-		model_kwargs={"response_mime_type": "application/json"},
+		response_mime_type="application/json",
 	)
 	response = llm.invoke(prompt)
 	return _extract_json_obj(getattr(response, "content", ""))
@@ -235,9 +431,10 @@ async def _step1_discovery(company_name: str, extra_context: str, notes: list[st
 			notes.append(f"Domain discovery failed: {domain_result}")
 		else:
 			try:
-				resolved_domain, _ = domain_result
+				resolved_domain, search_results = domain_result
 			except Exception as exc:
 				notes.append(f"Domain discovery parse failed: {exc}")
+				search_results = []
 
 		if isinstance(wikidata_result, Exception):
 			notes.append(f"Wikidata lookup failed: {wikidata_result}")
@@ -249,6 +446,11 @@ async def _step1_discovery(company_name: str, extra_context: str, notes: list[st
 			notes.append("Used Wikidata website as resolved domain fallback")
 
 		merge_into(data, wikidata, field_sources, "wikidata", skip_if_present=set())
+		if _is_weak_description(data.get("description")):
+			search_description = _search_result_description_fallback(resolved_domain, search_results)
+			if search_description:
+				data["description"] = search_description
+				field_sources["description"] = "discovery_search_snippet"
 		if wikidata.get("wikidata_url"):
 			sources.append(str(wikidata.get("wikidata_url")))
 	except Exception as exc:
@@ -328,32 +530,41 @@ async def _step2_parallel_services(
 	about_text = ""
 
 	try:
-		enrich_result, scraper_result, news_result, aftermarket_result = await asyncio.gather(
-			asyncio.to_thread(enrich_company, company_name, resolved_domain, wikidata),
-			asyncio.to_thread(get_about_page_text, resolved_domain or "", str(wikidata.get("website") or "")),
-			asyncio.to_thread(find_recent_news, company_name, resolved_domain, str(wikidata.get("website") or "")),
-			asyncio.to_thread(detect_aftermarket, resolved_domain or "", str(wikidata.get("website") or "")),
+		enrich_result, scraper_result, aftermarket_result = await asyncio.gather(
+			asyncio.to_thread(_timed_call, company_name, "step2.enrich_company", enrich_company, company_name, resolved_domain, wikidata),
+			asyncio.to_thread(
+				_timed_call,
+				company_name,
+				"step2.get_about_page_text",
+				get_about_page_text,
+				resolved_domain or "",
+				str(wikidata.get("website") or ""),
+			),
+			asyncio.to_thread(
+				_timed_call,
+				company_name,
+				"step2.detect_aftermarket",
+				detect_aftermarket,
+				resolved_domain or "",
+				str(wikidata.get("website") or ""),
+			),
 			return_exceptions=True,
 		)
 		enrichment_data, enrich_sources = _unpack_enrichment_result(enrich_result, notes)
 		scraper_dict, scraper_label, about_text = _unpack_scraper_result(scraper_result, notes)
-		news_items = _unpack_news_result(news_result, notes)
 		if isinstance(aftermarket_result, Exception):
 			notes.append(f"Aftermarket detection failed: {aftermarket_result}")
 		elif isinstance(aftermarket_result, dict):
 			aftermarket_data = aftermarket_result
 
 		_merge_enrichment_fields(data, field_sources, enrichment_data, enrich_sources)
-		merge_into(data, scraper_dict, field_sources, scraper_label, skip_if_present=set())
+		merge_into(data, scraper_dict, field_sources, scraper_label, skip_if_present={"description"})
 		merge_into(data, aftermarket_data, field_sources, "aftermarket_detector", skip_if_present=set())
 		if scraper_dict.get("source_url"):
 			sources.append(str(scraper_dict.get("source_url")))
 		for aftermarket_key in ("parts_page", "service_page", "support_page", "customer_portal_page"):
 			if isinstance(aftermarket_data.get(aftermarket_key), str) and aftermarket_data.get(aftermarket_key):
 				sources.append(str(aftermarket_data.get(aftermarket_key)))
-		if news_items:
-			data["recent_news"] = news_items
-			field_sources["recent_news"] = "news_service"
 	except Exception as exc:
 		notes.append(f"Parallel service step failed: {exc}")
 
@@ -362,25 +573,76 @@ async def _step2_parallel_services(
 
 async def _step3_sequential(
 	company_name: str,
+	resolved_domain: str | None,
+	aftermarket_data: dict[str, Any],
 	enrichment_data: dict[str, Any],
 	about_text: str,
 	data: dict[str, Any],
 	field_sources: dict[str, str],
 ) -> None:
 	try:
+		if resolved_domain:
+			try:
+				people_result = await asyncio.to_thread(
+					_timed_call,
+					company_name,
+					"step3.find_key_person",
+					find_key_person,
+					company_name,
+					resolved_domain,
+					aftermarket_data,
+					enrichment_data,
+				)
+				if isinstance(people_result, dict):
+					person_mapping = {
+						"name": "target_person_name",
+						"title": "target_person_title",
+						"linkedin_url": "target_person_linkedin_url",
+						"email": "target_person_email",
+						"source": "target_person_source",
+						"suggested_title": "suggested_target_title",
+						"suggested_title_reasoning": "suggested_target_title_reasoning",
+					}
+					for src_key, dst_key in person_mapping.items():
+						value = people_result.get(src_key)
+						if _is_empty(value):
+							continue
+						data[dst_key] = value
+						field_sources[dst_key] = "people_service"
+			except Exception:
+				pass
+
 		if _is_empty(data.get("what_they_make")) and about_text:
 			try:
-				wtm = await asyncio.to_thread(extract_what_they_make, about_text)
+				wtm = await asyncio.to_thread(
+					_timed_call,
+					company_name,
+					"step3.extract_what_they_make",
+					extract_what_they_make,
+					about_text,
+				)
 				if not _is_empty(wtm):
 					data["what_they_make"] = wtm
 					field_sources["what_they_make"] = "scraper_regex"
 			except Exception:
 				pass
 		if _is_empty(data.get("personalized_opening_line")):
-			opening_line = _build_opening_line(company_name, data)
+			llm_opening_line = None
+			llm_provider = None
+			try:
+				llm_opening_line, llm_provider = await asyncio.to_thread(
+					generate_opening_line_with_llms,
+					company_name,
+					data,
+				)
+			except Exception:
+				llm_opening_line, llm_provider = (None, None)
+			opening_line = llm_opening_line or _build_opening_line(company_name, data)
 			if opening_line:
 				data["personalized_opening_line"] = opening_line
-				field_sources["personalized_opening_line"] = "opening_line_generator"
+				field_sources["personalized_opening_line"] = (
+					f"opening_line_llm_{llm_provider}" if llm_opening_line and llm_provider else "opening_line_generator"
+				)
 	except Exception:
 		pass
 
@@ -413,6 +675,8 @@ def _step5_collect_sources(
 		for value in (enrich_sources or {}).values():
 			if isinstance(value, str) and value.startswith("http"):
 				sources.append(value)
+
+		_append_if_url(data.get("target_person_linkedin_url"))
 
 		return list(dict.fromkeys(u for u in sources if isinstance(u, str) and u.strip()))
 	except Exception as exc:
@@ -472,10 +736,21 @@ async def research_company(
 		field_sources,
 	)
 	_log_timing(company_name, "step2_parallel_services", stage_started_at)
+	aftermarket_data = {
+		"aftermarket_footprint": data.get("aftermarket_footprint"),
+		"parts_page": data.get("parts_page"),
+		"service_page": data.get("service_page"),
+		"support_page": data.get("support_page"),
+		"customer_portal_page": data.get("customer_portal_page"),
+		"portal_detected": data.get("portal_detected"),
+		"aftermarket_reason": data.get("aftermarket_reason"),
+	}
 
 	stage_started_at = time.perf_counter()
 	await _step3_sequential(
 		company_name,
+		resolved_domain,
+		aftermarket_data,
 		enrichment_data,
 		about_text,
 		data,

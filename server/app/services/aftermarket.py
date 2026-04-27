@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 from typing import Any
@@ -19,6 +20,7 @@ SITEMAP_CANDIDATE_PATHS = (
 )
 MAX_SITEMAP_URLS = 8
 MAX_SITEMAP_LINKS = 250
+AFTERMARKET_PROBE_WORKERS = 6
 COMMON_AFTERMARKET_PATHS = (
 	"/parts",
 	"/spare-parts",
@@ -33,6 +35,7 @@ COMMON_AFTERMARKET_PATHS = (
 	"/signin",
 	"/my-account",
 )
+PRIMARY_AFTERMARKET_CATEGORIES = ("parts_page", "service_page", "support_page")
 
 
 def extract_domain(url: str) -> str:
@@ -181,20 +184,30 @@ def _probe_common_aftermarket_paths(domain: str) -> list[dict[str, str]]:
 	if not clean_domain:
 		return []
 
-	results: list[dict[str, str]] = []
-	for path in COMMON_AFTERMARKET_PATHS:
+	def _probe_one(path: str) -> dict[str, str] | None:
 		url = f"https://{clean_domain}{path}"
 		try:
 			response = SESSION.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
 			if response.status_code >= 400:
-				continue
+				return None
 			final_url = str(getattr(response, "url", url) or url).strip()
 			if extract_domain(final_url) != clean_domain:
-				continue
+				return None
 			anchor = path.strip("/").replace("-", " ")
-			results.append({"url": final_url, "anchor_text": anchor})
+			return {"url": final_url, "anchor_text": anchor}
 		except Exception:
-			continue
+			return None
+
+	results: list[dict[str, str]] = []
+	with concurrent.futures.ThreadPoolExecutor(max_workers=min(AFTERMARKET_PROBE_WORKERS, len(COMMON_AFTERMARKET_PATHS))) as executor:
+		futures = [executor.submit(_probe_one, path) for path in COMMON_AFTERMARKET_PATHS]
+		for future in concurrent.futures.as_completed(futures):
+			try:
+				result = future.result()
+			except Exception:
+				result = None
+			if result:
+				results.append(result)
 	return results
 
 
@@ -298,6 +311,57 @@ def _build_aftermarket_reason(result: dict[str, Any]) -> str:
 	return " | ".join(reasons) if reasons else "No aftermarket links detected."
 
 
+def _result_from_best_links(best_links: dict[str, str | None]) -> dict[str, Any]:
+	portal_detected = bool(best_links.get("customer_portal_page"))
+	aftermarket_footprint = any(best_links.values())
+	return {
+		"aftermarket_footprint": bool(aftermarket_footprint),
+		"parts_page": best_links.get("parts_page"),
+		"service_page": best_links.get("service_page"),
+		"support_page": best_links.get("support_page"),
+		"customer_portal_page": best_links.get("customer_portal_page"),
+		"portal_detected": portal_detected,
+		"aftermarket_reason": _build_aftermarket_reason(best_links),
+	}
+
+
+def _first_clue_result(best_links: dict[str, str | None]) -> dict[str, Any]:
+	# First-clue mode: once we find a solid aftermarket signal, stop there.
+	# We keep only the first strongest page and do not continue building a full map.
+	for field_name, reason in (
+		("parts_page", "Parts section found"),
+		("service_page", "Service section found"),
+		("support_page", "Support section found"),
+		("customer_portal_page", "Customer/dealer portal appears to exist"),
+	):
+		value = best_links.get(field_name)
+		if not value:
+			continue
+		return {
+			"aftermarket_footprint": True,
+			"parts_page": value if field_name == "parts_page" else None,
+			"service_page": value if field_name == "service_page" else None,
+			"support_page": value if field_name == "support_page" else None,
+			"customer_portal_page": value if field_name == "customer_portal_page" else None,
+			"portal_detected": field_name == "customer_portal_page",
+			"aftermarket_reason": reason,
+		}
+	return _default_aftermarket()
+
+
+def _has_strong_aftermarket_signal(result: dict[str, Any]) -> bool:
+	return bool(
+		result.get("parts_page")
+		or result.get("service_page")
+		or result.get("support_page")
+		or result.get("customer_portal_page")
+	)
+
+
+def _has_primary_aftermarket_signal(result: dict[str, Any]) -> bool:
+	return any(result.get(category) for category in PRIMARY_AFTERMARKET_CATEGORIES)
+
+
 def _best_aftermarket_result(results: list[dict[str, Any]]) -> dict[str, Any]:
 	best_result: dict[str, Any] | None = None
 	best_score = -1
@@ -320,25 +384,27 @@ def detect_aftermarket(resolved_domain: str, website_url: str | None = None) -> 
 		candidate_results: list[dict[str, Any]] = []
 		for domain in candidate_domains:
 			homepage_links = fetch_links_from_homepage(domain)
-			sitemap_links = fetch_links_from_sitemap(domain) if len(homepage_links) < 25 else []
-			probed_links = _probe_common_aftermarket_paths(domain)
-			all_links = _dedupe_links(homepage_links + sitemap_links + probed_links)
-			scored_links = score_links_for_aftermarket(all_links)
-			best_links = _pick_best_links(scored_links)
-			portal_detected = bool(best_links.get("customer_portal_page"))
-			aftermarket_footprint = any(best_links.values())
+			homepage_scored = score_links_for_aftermarket(_dedupe_links(homepage_links))
+			homepage_best_links = _pick_best_links(homepage_scored)
 
-			candidate_results.append(
-				{
-					"aftermarket_footprint": bool(aftermarket_footprint),
-					"parts_page": best_links.get("parts_page"),
-					"service_page": best_links.get("service_page"),
-					"support_page": best_links.get("support_page"),
-					"customer_portal_page": best_links.get("customer_portal_page"),
-					"portal_detected": portal_detected,
-					"aftermarket_reason": _build_aftermarket_reason(best_links),
-				}
-			)
+			if _has_primary_aftermarket_signal(homepage_best_links):
+				return _first_clue_result(homepage_best_links)
+
+			probed_links = _probe_common_aftermarket_paths(domain)
+			combined_fast_links = _pick_best_links(score_links_for_aftermarket(_dedupe_links(homepage_links + probed_links)))
+			if _has_primary_aftermarket_signal(combined_fast_links):
+				return _first_clue_result(combined_fast_links)
+
+			best_links = combined_fast_links
+			if not _has_strong_aftermarket_signal(best_links) and len(homepage_links) < 25:
+				sitemap_links = fetch_links_from_sitemap(domain)
+				all_links = _dedupe_links(homepage_links + probed_links + sitemap_links)
+				scored_links = score_links_for_aftermarket(all_links)
+				best_links = _pick_best_links(scored_links)
+
+			candidate_results.append(_first_clue_result(best_links))
+			if _has_strong_aftermarket_signal(best_links):
+				return _first_clue_result(best_links)
 
 		return _best_aftermarket_result(candidate_results)
 	except Exception as exc:

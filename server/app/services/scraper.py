@@ -43,13 +43,14 @@ except Exception:
 
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash"); GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-SYSTEM_PROMPT = "You are a web scraping agent for company research. Your goal is to find what a company makes or provides and extract a brief description of their business. You will be given a list of candidate URLs to try. Rules: - Try fetch_page_direct on each URL first, in order. - Stop trying URLs as soon as you get more than 200 characters. - If fetch_page_direct returns less than 200 characters for a URL, try fetch_page_firecrawl on that same URL before moving on. - Once you have good text, call extract_what_they_make_from_text. - If regex extraction returns null, use the page text itself to write a one-sentence description of what the company makes. - Return a JSON object with two fields: what_they_make, description, source_url, fetch_method."
+SYSTEM_PROMPT = "You are a web scraping agent for company research. Your goal is to find what a company makes or provides and extract a brief description of their business. You will be given a list of candidate URLs to try. Rules: - Try fetch_page_direct on each URL first, in order. - Stop trying URLs as soon as you get more than 200 characters. - If fetch_page_direct returns less than 200 characters for a URL, try fetch_page_firecrawl on that same URL before moving on. - Once you have good text, call extract_what_they_make_from_text. - If regex extraction returns null, use the page text itself to write a quick 2 to 3 sentence description of what the company makes. - Keep the description factual and concise. - Return a JSON object with two fields: what_they_make, description, source_url, fetch_method."
 PROFILE_PROMPT_TEMPLATE = (
     "You extract company profile information from website copy.\n"
     "Using only the text below, return valid JSON with keys `what_they_make` and `description`.\n"
     "`what_they_make` should be a short phrase naming the company's products or core offering.\n"
-    "`description` should be one sentence summarizing what the company makes or provides.\n"
-    "If uncertain, return null for `what_they_make` and use the best factual one-sentence description you can.\n\n"
+    "`description` should be very short: 1 to 2 crisp sentences summarizing what the company makes or provides.\n"
+    "Keep it factual, tight, and under 220 characters total.\n"
+    "If uncertain, return null for `what_they_make` and use the best factual short summary you can.\n\n"
     "TEXT:\n{input_text}"
 )
 
@@ -168,11 +169,88 @@ def _parse_json(text: Any) -> dict[str, Any]:
     return {}
 
 
+def _clean_markdown_profile_text(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+
+    if "# " in cleaned:
+        cleaned = cleaned[cleaned.find("# ") :]
+
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", cleaned)
+    cleaned = re.sub(r"https?://\S+", " ", cleaned)
+    cleaned = re.sub(r"\b\d{1,2}/\d{1,2}/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+[AP]M\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b\d+\.\s+\d+\b", " ", cleaned)
+    cleaned = re.sub(r"\s+#\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:MAX_CONTENT_CHARS]
+
+
+def _looks_like_noisy_description(text: str | None) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    noisy_patterns = (
+        r"https?://",
+        r"\[[^\]]+\]\([^)]+\)",
+        r"\b\d{1,2}/\d{1,2}/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+[AP]M\b",
+    )
+    if any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in noisy_patterns):
+        return True
+    if value.count(" - ") >= 3:
+        return True
+    return False
+
+
+def _shorten_description(text: str | None, max_sentences: int = 3, max_chars: int = 320) -> str | None:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return None
+
+    sentences = re.split(r"(?<=[.!?])\s+", value)
+    kept: list[str] = []
+    for sentence in sentences:
+        clean = sentence.strip()
+        if not clean:
+            continue
+        kept.append(clean)
+        if len(kept) >= max_sentences:
+            break
+
+    shortened = " ".join(kept).strip() if kept else value
+    if len(shortened) > max_chars:
+        shortened = shortened[:max_chars].rstrip(" ,;:-")
+        if shortened and shortened[-1] not in ".!?":
+            shortened += "."
+    return shortened or None
+
+
+def _shorten_llm_description(text: str | None) -> str | None:
+    return _shorten_description(text, max_sentences=2, max_chars=220)
+
+
+def _shorten_website_description(text: str | None) -> str | None:
+    return _shorten_description(text, max_sentences=4, max_chars=420)
+
+
+def _fallback_description_from_text(text: str) -> str | None:
+    cleaned = _clean_markdown_profile_text(text)
+    if not cleaned:
+        return None
+
+    sentence_matches = re.findall(r"[A-Z][^.?!]{25,220}[.?!]", cleaned)
+    if sentence_matches:
+        return _shorten_website_description(" ".join(sentence_matches[:4]))
+
+    return _shorten_website_description(cleaned[:420].strip() or None)
+
+
 def _invoke_profile_llm(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    prompt = PROFILE_PROMPT_TEMPLATE.format(input_text=text[:2500])
+    prompt = PROFILE_PROMPT_TEMPLATE.format(input_text=_clean_markdown_profile_text(text)[:2500])
     llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0) if GEMINI_API_KEY else None
     if llm is None and GROQ_API_KEY:
         llm = ChatGroq(model=GROQ_MODEL, groq_api_key=GROQ_API_KEY, temperature=0)
@@ -255,20 +333,32 @@ def get_about_page_text(resolved_domain: str, website_url: str = "") -> tuple[di
             continue
 
         what_they_make = extract_what_they_make_from_text.invoke({"text": text})
-        llm_profile = _invoke_profile_llm(text)
-        llm_what_they_make = llm_profile.get("what_they_make") if isinstance(llm_profile.get("what_they_make"), str) else None
-        llm_description = llm_profile.get("description") if isinstance(llm_profile.get("description"), str) else None
+        fallback_description = _fallback_description_from_text(text)
+        llm_profile: dict[str, Any] = {}
+        llm_what_they_make = None
+        llm_description = None
+
+        # Avoid an extra LLM round-trip when we already have a usable factual sentence.
+        if not what_they_make and not fallback_description:
+            llm_profile = _invoke_profile_llm(text)
+            llm_what_they_make = llm_profile.get("what_they_make") if isinstance(llm_profile.get("what_they_make"), str) else None
+            llm_description = llm_profile.get("description") if isinstance(llm_profile.get("description"), str) else None
+
         _debug_what_they_make(
             "[what_they_make] url=%s regex_result=%s llm_result=%s",
             url,
             what_they_make,
             llm_what_they_make,
         )
-        description = (llm_description or text[:500]).strip()
+        description = None
+        if not _looks_like_noisy_description(llm_description):
+            description = _shorten_llm_description(llm_description)
+        if not description:
+            description = _shorten_website_description(fallback_description)
         data = {
-            "description": description,
+            "description": (description or "").strip(),
             "source_url": url,
-            "fetch_method": "direct",
+            "fetch_method": "firecrawl" if used_firecrawl_for_url else "direct",
         }
         final_what_they_make = what_they_make if isinstance(what_they_make, str) and what_they_make else llm_what_they_make
         if isinstance(final_what_they_make, str) and final_what_they_make:

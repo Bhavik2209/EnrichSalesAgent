@@ -95,6 +95,29 @@ def _normalize_text(value: Any) -> str | None:
 	return text or None
 
 
+def _shorten_description(value: Any, max_sentences: int = 3, max_chars: int = 420) -> str | None:
+	text = _normalize_text(value)
+	if not text:
+		return None
+
+	sentences = re.split(r"(?<=[.!?])\s+", text)
+	kept: list[str] = []
+	for sentence in sentences:
+		clean = sentence.strip()
+		if not clean:
+			continue
+		kept.append(clean)
+		if len(kept) >= max_sentences:
+			break
+
+	shortened = " ".join(kept).strip() if kept else text
+	if len(shortened) > max_chars:
+		shortened = shortened[:max_chars].rstrip(" ,;:-")
+		if shortened and shortened[-1] not in ".!?":
+			shortened += "."
+	return shortened or None
+
+
 def _normalize_lookup_domain(value: str | None) -> str:
 	if not value:
 		return ""
@@ -161,7 +184,7 @@ def _map_technology_checker_response(data: dict[str, Any]) -> dict[str, Any]:
 		"hq_country": _normalize_text(payload.get("country")),
 		"industry": _normalize_text(payload.get("industry")),
 		"official_name": _normalize_text(payload.get("company_name")),
-		"description": _normalize_text(payload.get("description")),
+		"description": _shorten_description(payload.get("description"), max_sentences=3, max_chars=420),
 		"parent_company": _normalize_text(payload.get("company_type")),
 	}
 
