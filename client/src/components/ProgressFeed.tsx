@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { CheckCircle2, Clock3, Globe, Search, Sparkles, User, Wrench, XCircle } from 'lucide-react';
 import type { ProgressStep } from '@/types/briefing';
 
@@ -33,24 +34,40 @@ interface Props {
 }
 
 export function ProgressFeed({ steps }: Props) {
+  const visibleSteps = useMemo(() => steps.slice(-4), [steps]);
+
   return (
-    <section className="card-surface p-4 sm:p-5 h-full">
-      <div className="flex items-center justify-between gap-3 mb-3">
+    <section className="rounded-2xl border border-[hsl(var(--divider))] bg-[hsl(var(--surface))] p-4 sm:p-5">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="eyebrow">LIVE RESEARCH FEED</div>
-          <div className="text-[13px] text-secondary-ink mt-1">Streaming actual backend activity as it happens.</div>
+          <div className="eyebrow">Live Logs</div>
+          <div className="mt-1 text-[13px] text-secondary-ink">Latest backend activity.</div>
         </div>
         <div className="text-[11px] uppercase tracking-[0.08em] text-muted-ink">{steps.length} events</div>
       </div>
 
-      <div className="rounded-xl border border-[hsl(var(--divider))] bg-[hsl(var(--surface))] p-2 sm:p-3 max-h-[560px] overflow-y-auto">
+      <div className="mt-4">
         {steps.length === 0 && (
-          <div className="rounded-lg border border-dashed border-[hsl(var(--input))] bg-white px-4 py-6 text-[13px] text-secondary-ink">
-            Waiting for the backend stream to start...
+          <div className="rounded-2xl border border-dashed border-[hsl(var(--input))] bg-white px-4 py-4">
+            <div className="text-[13px] text-secondary-ink">Waiting for the backend stream to start...</div>
+            <div className="mt-3 space-y-2">
+              {[
+                'Resolving company profile',
+                'Checking enrichment sources',
+                'Inspecting aftermarket signals',
+                'Finding the best booth contact',
+              ].map((line, index) => (
+                <div key={line} className="flex items-center gap-3 text-[12px] text-secondary-ink">
+                  <span className="text-muted-ink">{String(index + 1).padStart(2, '0')}</span>
+                  <div className="h-2 w-2 rounded-full bg-[hsl(var(--primary))] pulse-dot" />
+                  <span>{line}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <ul className="space-y-2">
-          {steps.map((step) => {
+          {visibleSteps.map((step, index) => {
             const Icon = stageIcon(step.stage);
             const isActive = step.status === 'active';
             const isFailed = step.status === 'failed';
@@ -58,7 +75,7 @@ export function ProgressFeed({ steps }: Props) {
             return (
               <li
                 key={step.id}
-                className={`animate-fade-up rounded-xl border px-3 py-3 sm:px-4 ${
+                className={`animate-fade-up rounded-2xl border px-3 py-3 ${
                   isFailed
                     ? 'border-[hsl(var(--danger-border))] bg-[hsl(var(--danger-tint))]'
                     : isActive
@@ -68,7 +85,7 @@ export function ProgressFeed({ steps }: Props) {
               >
                 <div className="flex items-start gap-3">
                   <div
-                    className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                    className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
                       isFailed
                         ? 'bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]'
                         : isActive
@@ -76,7 +93,10 @@ export function ProgressFeed({ steps }: Props) {
                         : 'bg-[hsl(var(--surface))] text-secondary-ink'
                     }`}
                   >
-                    <Icon size={16} />
+                    <Icon size={14} />
+                  </div>
+                  <div className="w-8 shrink-0 pt-0.5 text-[11px] text-muted-ink">
+                    {String(steps.length - visibleSteps.length + index + 1).padStart(2, '0')}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -88,7 +108,7 @@ export function ProgressFeed({ steps }: Props) {
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${
                           isFailed
                             ? 'bg-[hsl(var(--danger))]/10 text-[hsl(var(--danger))]'
-                            : isActive
+                          : isActive
                             ? 'bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]'
                             : 'bg-[hsl(var(--success))]/10 text-[hsl(var(--success))]'
                         }`}
@@ -96,7 +116,7 @@ export function ProgressFeed({ steps }: Props) {
                         {isFailed ? 'Failed' : isActive ? 'Running' : 'Done'}
                       </span>
                     </div>
-                    <div className="mt-1 text-[13px] sm:text-[14px] leading-relaxed text-body-ink">
+                    <div className="mt-1.5 text-[13px] leading-relaxed text-body-ink">
                       {step.message}
                     </div>
                   </div>

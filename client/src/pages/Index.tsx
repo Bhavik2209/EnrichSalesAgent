@@ -34,7 +34,7 @@ export default function Index() {
       <main className="flex-1">
         {error && <ErrorView message={error} onRetry={handleReset} />}
         {!error && showInput && (
-          <div className="max-w-[1200px] mx-auto px-6 pb-20">
+          <div className="mx-auto flex min-h-[calc(100vh-56px)] max-w-[1200px] items-center px-4 py-6 sm:px-6">
             <InputForm onSubmit={handleSubmit} />
           </div>
         )}

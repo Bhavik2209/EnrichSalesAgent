@@ -4,6 +4,18 @@ Backend service for company research and outreach enrichment.
 
 This server accepts a company name, discovers the official domain, enriches company attributes from multiple sources, detects aftermarket/service signals, suggests the best target person or title, and generates a personalized opening line for outreach.
 
+## Pipeline Diagram
+
+Store the pipeline image here:
+
+```text
+docs/images/backend-pipeline.png
+```
+
+GitHub-rendered image:
+
+![Backend pipeline flow](../docs/images/backend-pipeline.png)
+
 ## Folder Structure
 
 ```text
