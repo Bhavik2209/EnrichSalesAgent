@@ -2,7 +2,7 @@
 
 Backend service for company research and outreach enrichment.
 
-This server accepts a company name, discovers the official domain, enriches company attributes from multiple sources, detects aftermarket/service signals, suggests the best target person or title, and generates a personalized opening line for outreach.
+This server accepts a company name, discovers the official domain, enriches company attributes from multiple sources, detects aftermarket/service signals, suggests the best target person or title, and generates both a structured company summary and a personalized opening line for outreach.
 
 ## Pipeline Diagram
 
@@ -67,6 +67,7 @@ Request flow:
 4. Each service returns data plus source attribution.
 5. The final response contains:
    - normalized company data
+   - structured company summary text for frontend playback
    - field-level source mapping
    - source URLs
    - timing notes
@@ -95,7 +96,7 @@ Responsibilities:
 - Coordinates the entire research pipeline
 - Runs discovery first
 - Runs major enrichment services in parallel
-- Runs people targeting and opening-line generation after enrichment
+- Runs people targeting plus summary and opening-line generation after enrichment
 - Merges data from all sources
 - Tracks field-level provenance and timings
 
@@ -373,10 +374,12 @@ After step 2 completes, step 3 runs sequentially:
 
 - people targeting
 - `what_they_make` backfill if still missing
+- structured company summary generation
 - personalized opening line generation
 
 This design keeps dependencies simple:
 - people targeting can use aftermarket signals
+- summary generation can use enriched company context, tags, geography, and aftermarket evidence
 - opening-line generation can use enriched company context
 
 ## Fallback Strategy
@@ -449,6 +452,13 @@ Order:
 - secondary Groq model generation
 - deterministic fallback opening line
 
+### Company Summary
+
+Order:
+- Groq model generation
+- secondary Groq model generation
+- deterministic fallback summary built from company facts, tags, geography, and aftermarket context
+
 ## Source Attribution
 
 Every returned field can have a source in `field_sources`.
@@ -462,6 +472,7 @@ Examples:
 - `direct`
 - `aftermarket_detector`
 - `people_service`
+- `company_summary_llm_groq:qwen/qwen3-32b`
 - `opening_line_llm_groq:qwen/qwen3-32b`
 
 This makes it easier to debug the response and understand which provider produced each field.
@@ -474,6 +485,7 @@ Typical Hunter-derived fields now include:
 - `site_emails`
 - `aftermarket_site_emails`
 - `target_person_confidence`
+- `company_summary_short`
 
 ## API
 

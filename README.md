@@ -1,6 +1,6 @@
 # EnrichSalesAgent
 
-EnrichSalesAgent is a research pipeline for industrial-tradeshow outreach. Give it a company name and optional booth context, and it returns a source-backed research brief with company facts, aftermarket clues, target-contact guidance, and an opening line.
+EnrichSalesAgent is a research pipeline for industrial-tradeshow outreach. Give it a company name and optional booth context, and it returns a source-backed research brief with company facts, aftermarket clues, target-contact guidance, a structured company summary, and an opening line.
 
 The frontend is intentionally light. The core value of this repo is the backend orchestration flow: domain discovery, enrichment, scraping, aftermarket detection, people targeting, source attribution, and response caching.
 
@@ -18,11 +18,15 @@ Place these images in `docs/images/` so they render automatically in GitHub:
 
 ### 3. Research Card 1
 
-![Research card screenshot 1](docs/images/research-card-1.png)
+![Research card screenshot 1](docs/images/img1.png)
 
 ### 4. Research Card 2
 
-![Research card screenshot 2](docs/images/research-card-2.png)
+![Research card screenshot 2](docs/images/img2.png)
+
+### 5. Research Card 3
+
+![Research card screenshot 3](docs/images/img3.png)
 
 ## Backend Pipeline
 
@@ -39,6 +43,8 @@ The backend README also references the same file, so you only need to keep one c
 - Scrapes website/about-page content when enrichment providers leave gaps.
 - Detects aftermarket, service, support, and portal signals.
 - Finds the best booth-contact person or a fallback target title.
+- Generates a structured 5 to 6 line company summary using company facts, tags, geography, and aftermarket context.
+- Supports browser-based TTS playback for the company summary on the frontend.
 - Generates a personalized opening line.
 - Returns field-level provenance and source URLs.
 - Streams progress events to the frontend while the backend is running.
@@ -60,9 +66,10 @@ Frontend:
 7. Scraping fills gaps in `description` or `what_they_make` when needed.
 8. Aftermarket detection looks for service, parts, support, and portal clues.
 9. People targeting finds a real person or the best fallback title.
-10. Opening-line generation produces a personalized outreach opener.
-11. The final response is returned with `data`, `field_sources`, `sources`, and `notes`.
-12. The completed response is cached by both input alias and resolved domain for future requests.
+10. Messaging generation produces a structured company summary and a personalized outreach opener.
+11. The frontend can play the summary back using browser TTS controls.
+12. The final response is returned with `data`, `field_sources`, `sources`, and `notes`.
+13. The completed response is cached by both input alias and resolved domain for future requests.
 
 ## Backend Architecture
 
@@ -187,7 +194,7 @@ The frontend is mostly a simple operator surface:
 
 - input form
 - loading/logs view
-- final briefing card
+- final briefing card with summary audio playback
 
 The hard part of the product lives in the backend:
 
@@ -260,8 +267,9 @@ Put all README images here:
 ```text
 docs/images/front-page.png
 docs/images/live-logs.png
-docs/images/research-card-1.png
-docs/images/research-card-2.png
+docs/images/img1.png
+docs/images/img2.png
+docs/images/img3.png
 docs/images/backend-pipeline.png
 ```
 

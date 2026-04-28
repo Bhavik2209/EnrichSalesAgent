@@ -13,6 +13,8 @@ EnrichSalesAgent turns a company name into a decision-ready briefing card in und
 - **Briefing card.** A structured, source-cited intelligence card optimized for a 30-second read before a booth visit:
   - Company identity bar (HQ, founded, employees, revenue with confidence)
   - Geography badge (target market vs. flagged region)
+  - Structured 5 to 6 line company summary using company facts, tags, geography, and aftermarket context
+  - Browser-based TTS playback for the company summary
   - Product line and company snapshot
   - Aftermarket footprint and recent signals
   - "Right person at the booth" — verified name + title, or a role estimate (never a fabricated name)
