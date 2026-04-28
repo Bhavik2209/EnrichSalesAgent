@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* EnrichSalesAgent — Industrility design system. White-first enterprise SaaS. */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --background: 0 0% 100%;                /* #FFFFFF */
+    --foreground: 220 39% 11%;              /* #111827 */
+    --surface: 220 20% 98%;                 /* #F8F9FB */
+    --card: 0 0% 100%;
+    --card-foreground: 220 39% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 39% 11%;
+
+    /* Brand orange */
+    --primary: 21 94% 53%;                  /* #F97316 */
+    --primary-hover: 22 96% 47%;            /* #EA6A05 */
+    --primary-foreground: 0 0% 100%;
+    --primary-tint: 33 100% 96%;            /* #FFF7ED */
+    --primary-tint-strong: 30 100% 98%;     /* #FFFBF7 */
+
+    /* Secondary blue (links / info) */
+    --info: 217 91% 60%;                    /* #2563EB */
+    --info-tint: 214 100% 97%;              /* #EFF6FF */
+
+    /* Status */
+    --success: 142 71% 45%;                 /* #16A34A */
+    --success-tint: 138 76% 97%;            /* #F0FDF4 */
+    --success-border: 142 77% 73%;          /* #86EFAC */
+
+    --warning: 32 94% 44%;                  /* #D97706 */
+    --warning-tint: 48 100% 96%;            /* #FFFBEB */
+    --warning-border: 48 96% 76%;           /* #FDE68A */
+
+    --danger: 0 72% 51%;                    /* #DC2626 */
+    --danger-tint: 0 86% 97%;               /* #FEF2F2 */
+    --danger-border: 0 94% 82%;             /* #FCA5A5 */
+
+    /* Text */
+    --text-primary: 220 39% 11%;            /* #111827 */
+    --text-body: 217 19% 27%;               /* #374151 */
+    --text-secondary: 220 9% 46%;           /* #6B7280 */
+    --text-muted: 220 14% 71%;              /* #9CA3AF */
+
+    /* Lines */
+    --border: 220 13% 91%;                  /* #E5E7EB */
+    --divider: 220 14% 96%;                 /* #F3F4F6 */
+    --input: 220 13% 83%;                   /* #D1D5DB */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 220 39% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 21 94% 53%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --ring: 21 94% 53%;
+
+    --radius: 0.5rem;
+
+    /* Shadows */
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-input: 0 4px 16px rgba(0,0,0,0.06);
+    --shadow-focus: 0 0 0 3px rgba(249,115,22,0.15);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html, body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    color: hsl(var(--text-body));
+  }
+  h1, h2, h3, h4, h5, h6 {
+    color: hsl(var(--text-primary));
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  .font-mono {
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .eyebrow {
+    @apply uppercase font-semibold;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: hsl(var(--text-secondary));
+  }
+  .card-surface {
+    background: #fff;
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    box-shadow: var(--shadow-card);
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #F3F4F6 25%, #E9EAEC 50%, #F3F4F6 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    border-radius: 4px;
+  }
+}
+
+@layer utilities {
+  .text-primary-ink { color: hsl(var(--text-primary)); }
+  .text-body-ink { color: hsl(var(--text-body)); }
+  .text-secondary-ink { color: hsl(var(--text-secondary)); }
+  .text-muted-ink { color: hsl(var(--text-muted)); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fade-up 0.25s ease-out both; }
+
+@keyframes section-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-section-in { animation: section-in 0.3s ease-out both; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+.pulse-dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+
+@keyframes pulse-flag {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.0); border-color: hsl(var(--danger-border)); }
+  50% { box-shadow: 0 0 0 4px rgba(220,38,38,0.18); border-color: hsl(var(--danger)); }
+}
+.pulse-flag { animation: pulse-flag 1.6s ease-in-out infinite; }
+
+@keyframes progress-grow {
+  from { width: 5%; }
+  to { width: 92%; }
+}
+.progress-grow { animation: progress-grow 28s ease-out forwards; }
