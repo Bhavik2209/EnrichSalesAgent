@@ -12,11 +12,10 @@ OPENING_LINE_SECONDARY_GROQ_MODEL = os.getenv("OPENING_LINE_SECONDARY_GROQ_MODEL
 
 try:
 	from langchain_google_genai import ChatGoogleGenerativeAI
-	from langchain_groq import ChatGroq  # type: ignore[import-not-found]
-
+	from langchain_groq import ChatGroq 
 	HAS_LLM = True
 except Exception:
-	ChatGoogleGenerativeAI = ChatGroq = None  # type: ignore[assignment]
+	ChatGoogleGenerativeAI = ChatGroq = None  
 	HAS_LLM = False
 
 
