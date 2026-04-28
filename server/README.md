@@ -488,8 +488,8 @@ Typical Hunter-derived fields now include:
 - `company_summary_short`
 
 ## API
-
-### POST `/research`
+ 
+ ### POST `/research`
 
 Request body:
 
@@ -640,12 +640,14 @@ Configured in `server/.env`.
 Common keys used by the backend:
 
 - `TAVILY_API_KEY`
-- `GEMINI_API_KEY`
-- `GOOGLE_API_KEY`
+- `GEMINI_API_KEY` (supports a single key or a comma-separated list)
+- `GOOGLE_API_KEY` (supports a single key or a comma-separated list)
 - `GROQ_API_KEY`
 - `FIRECRAWL_API_KEY`
 - `ABSTRACT_API_KEY`
-- `CUFINDER_API_KEY`
+- `CUFINDER_API_KEY` (supports a single key or a comma-separated list)
+- `CUFINDER_API_KEYS`
+- `GEMINI_API_KEYS`
 - `TECHNOLOGY_CHECKER_API_KEY`
 - `HUNTER_API_KEY`
 - `USER_AGENT`

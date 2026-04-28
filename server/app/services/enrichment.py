@@ -258,6 +258,35 @@ def _map_cufinder_enc_response(data: dict[str, Any]) -> dict[str, Any]:
 	return {k: v for k, v in mapped.items() if not _is_missing(v)}
 
 
+def _is_cufinder_credit_error(payload: dict[str, Any]) -> bool:
+	message_parts = [
+		str(payload.get("message") or ""),
+		str(payload.get("detail") or ""),
+		str(payload.get("error") or ""),
+	]
+	data = payload.get("data")
+	if isinstance(data, dict):
+		message_parts.extend(
+			[
+				str(data.get("message") or ""),
+				str(data.get("detail") or ""),
+				str(data.get("error") or ""),
+			]
+		)
+
+	message = " ".join(part.strip().lower() for part in message_parts if part and part.strip())
+	if not message:
+		return False
+
+	return (
+		"no credit" in message
+		or "insufficient credit" in message
+		or "out of credit" in message
+		or "quota exceeded" in message
+		or "usage limit" in message
+	)
+
+
 def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
 	last_error: Exception | None = None
 	for index, api_key in enumerate(CUFINDER_API_KEYS, start=1):
@@ -273,7 +302,12 @@ def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
 			)
 			response.raise_for_status()
 			parsed = response.json()
-			return parsed if isinstance(parsed, dict) else {}
+			if not isinstance(parsed, dict):
+				return {}
+			if _is_cufinder_credit_error(parsed):
+				logger.warning("CUFinder key %s/%s reported no credits for endpoint %s", index, len(CUFINDER_API_KEYS), endpoint)
+				continue
+			return parsed
 		except Exception as exc:
 			last_error = exc
 			status_code = getattr(getattr(exc, "response", None), "status_code", None)

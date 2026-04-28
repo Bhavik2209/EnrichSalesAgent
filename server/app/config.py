@@ -32,17 +32,20 @@ HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "").strip()
 TECHNOLOGY_CHECKER_API_KEY = os.getenv("TECHNOLOGY_CHECKER_API_KEY", "").strip()
 
 GEMINI_API_KEYS = _parse_key_list(os.getenv("GEMINI_API_KEYS", ""))
-if GEMINI_API_KEY:
-	GEMINI_API_KEYS = [GEMINI_API_KEY] + [key for key in GEMINI_API_KEYS if key != GEMINI_API_KEY]
-if GOOGLE_API_KEY:
-	if not GEMINI_API_KEY:
-		GEMINI_API_KEYS = [GOOGLE_API_KEY] + [key for key in GEMINI_API_KEYS if key != GOOGLE_API_KEY]
+primary_gemini_keys = _parse_key_list(GEMINI_API_KEY)
+if primary_gemini_keys:
+	GEMINI_API_KEYS = primary_gemini_keys + [key for key in GEMINI_API_KEYS if key not in primary_gemini_keys]
+google_gemini_keys = _parse_key_list(GOOGLE_API_KEY)
+if google_gemini_keys:
+	if not primary_gemini_keys:
+		GEMINI_API_KEYS = google_gemini_keys + [key for key in GEMINI_API_KEYS if key not in google_gemini_keys]
 	else:
-		GEMINI_API_KEYS = GEMINI_API_KEYS + [key for key in [GOOGLE_API_KEY] if key not in GEMINI_API_KEYS]
+		GEMINI_API_KEYS = GEMINI_API_KEYS + [key for key in google_gemini_keys if key not in GEMINI_API_KEYS]
 
 CUFINDER_API_KEYS = _parse_key_list(os.getenv("CUFINDER_API_KEYS", ""))
-if CUFINDER_API_KEY:
-	CUFINDER_API_KEYS = [CUFINDER_API_KEY] + [key for key in CUFINDER_API_KEYS if key != CUFINDER_API_KEY]
+primary_cufinder_keys = _parse_key_list(CUFINDER_API_KEY)
+if primary_cufinder_keys:
+	CUFINDER_API_KEYS = primary_cufinder_keys + [key for key in CUFINDER_API_KEYS if key not in primary_cufinder_keys]
 
 HUNTER_API_KEYS = _parse_key_list(os.getenv("HUNTER_API_KEYS", ""))
 if HUNTER_API_KEY:
