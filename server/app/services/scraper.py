@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
@@ -14,6 +14,22 @@ from app.llms import HAS_LLM, build_default_llm
 from app.prompts import SCRAPER_PROFILE_PROMPT_TEMPLATE, SCRAPER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str, str, dict[str, Any] | None], None]
+
+
+def _emit_progress(
+    progress_cb: ProgressCallback | None,
+    stage: str,
+    status: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    if progress_cb is None:
+        return
+    try:
+        progress_cb(stage, status, message, data)
+    except Exception:
+        pass
 
 MIN_DIRECT_PROFILE_TEXT_CHARS = 200
 MIN_FIRECRAWL_PROFILE_TEXT_CHARS = 120
@@ -107,6 +123,28 @@ def extract_what_they_make_from_text(text: str) -> str | None:
     return None
 
 
+def _looks_like_noisy_what_they_make(text: str | None) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return True
+
+    noisy_patterns = (
+        r"#\s*new products",
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+        r"\b\d{4}\b",
+        r"\[[^\]]+\]",
+        r"\bnews\b",
+        r"\bpress release\b",
+    )
+    if any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in noisy_patterns):
+        return True
+    if value.count("/") >= 3:
+        return True
+    if len(value) > 220:
+        return True
+    return False
+
+
 def _normalize_root_url(raw_url: str) -> str:
     raw = (raw_url or "").strip().rstrip("/")
     if not raw:
@@ -125,7 +163,7 @@ def _build_profile_urls(*candidate_domains: str) -> list[str]:
             roots.append(root)
 
     urls: list[str] = []
-    suffixes = ["", "/about", "/about-us"]
+    suffixes = ["/about", "/about-us", ""]
     for root in roots:
         for suffix in suffixes:
             url = f"{root}{suffix}"
@@ -204,9 +242,15 @@ def _shorten_description(text: str | None, max_sentences: int = 3, max_chars: in
 
     shortened = " ".join(kept).strip() if kept else value
     if len(shortened) > max_chars:
-        shortened = shortened[:max_chars].rstrip(" ,;:-")
-        if shortened and shortened[-1] not in ".!?":
-            shortened += "."
+        candidate = shortened[:max_chars].rstrip(" ,;:-")
+        last_punct = max(candidate.rfind("."), candidate.rfind("!"), candidate.rfind("?"))
+        if last_punct >= max(40, max_chars // 3):
+            shortened = candidate[: last_punct + 1].strip()
+        else:
+            last_space = candidate.rfind(" ")
+            shortened = candidate[:last_space].rstrip(" ,;:-") if last_space > 0 else candidate
+            if shortened and shortened[-1] not in ".!?":
+                shortened += "."
     return shortened or None
 
 
@@ -278,7 +322,7 @@ def _run_agent(agent: dict[str, Any], urls: list[str]) -> tuple[dict, str]:
     return ({}, "failed")
 
 
-def get_about_page_text(resolved_domain: str, website_url: str = "") -> tuple[dict, str]:
+def get_about_page_text(resolved_domain: str, website_url: str = "", progress_cb: ProgressCallback | None = None) -> tuple[dict, str]:
     urls = _build_profile_urls(website_url, resolved_domain)
     if not urls:
         _debug_what_they_make(
@@ -289,8 +333,10 @@ def get_about_page_text(resolved_domain: str, website_url: str = "") -> tuple[di
         return ({}, "failed")
 
     firecrawl_attempts = 0
+    _emit_progress(progress_cb, "scraper.start", "info", "Trying company profile URLs", {"urls": urls[:MAX_PROFILE_URLS_TO_TRY]})
     _debug_what_they_make("[what_they_make] trying candidate urls: %s", urls[:MAX_PROFILE_URLS_TO_TRY])
     for url in urls[:MAX_PROFILE_URLS_TO_TRY]:
+        _emit_progress(progress_cb, "scraper.direct", "info", f"Fetching profile page directly: {url}")
         text = fetch_page_direct.invoke({"url": url})
         used_firecrawl_for_url = False
         if not isinstance(text, str):
@@ -300,6 +346,7 @@ def get_about_page_text(resolved_domain: str, website_url: str = "") -> tuple[di
             if firecrawl_attempts < MAX_FIRECRAWL_FALLBACKS:
                 firecrawl_attempts += 1
                 used_firecrawl_for_url = True
+                _emit_progress(progress_cb, "scraper.firecrawl", "fallback", f"Direct fetch returned no usable text, trying Firecrawl for {url}")
                 firecrawl_text = fetch_page_firecrawl.invoke({"url": url})
                 if not isinstance(firecrawl_text, str):
                     firecrawl_text = ""
@@ -341,12 +388,17 @@ def get_about_page_text(resolved_domain: str, website_url: str = "") -> tuple[di
             "fetch_method": "firecrawl" if used_firecrawl_for_url else "direct",
         }
         final_what_they_make = what_they_make if isinstance(what_they_make, str) and what_they_make else llm_what_they_make
+        if _looks_like_noisy_what_they_make(final_what_they_make):
+            _debug_what_they_make("[what_they_make] rejected noisy result for url=%s value=%s", url, final_what_they_make)
+            final_what_they_make = None
         if isinstance(final_what_they_make, str) and final_what_they_make:
             data["what_they_make"] = final_what_they_make.strip()
             _debug_what_they_make("[what_they_make] selected url=%s final_result=%s", url, final_what_they_make.strip())
         else:
             _debug_what_they_make("[what_they_make] selected url=%s but no what_they_make extracted", url)
-        return (data, "direct")
+        _emit_progress(progress_cb, "scraper.result", "completed", f"Selected profile content from {url}", {"fetch_method": str(data.get('fetch_method') or 'direct')})
+        return (data, str(data.get("fetch_method") or "direct"))
 
     _debug_what_they_make("[what_they_make] no usable profile page found from candidate urls")
+    _emit_progress(progress_cb, "scraper.result", "fallback", "No usable website profile content was found")
     return ({}, "failed")

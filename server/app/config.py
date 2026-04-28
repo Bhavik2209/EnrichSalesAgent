@@ -33,6 +33,14 @@ FIRECRAWL_TIMEOUT = 8
 MAX_CONTENT_CHARS = 5000
 CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", str(SERVER_DIR / "research_cache.sqlite3")).strip() or str(SERVER_DIR / "research_cache.sqlite3")
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "86400").strip() or "86400")
+CORS_ALLOWED_ORIGINS = [
+	origin.strip()
+	for origin in os.getenv(
+		"CORS_ALLOWED_ORIGINS",
+		"http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173",
+	).split(",")
+	if origin.strip()
+]
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 LEGACY_BOT_USER_AGENT = "sales-agent/1.0 (+https://local.enrichsalesagent)"
 USER_AGENT = os.getenv("USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT

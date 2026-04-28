@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.config import (
 	CUFINDER_API_KEY,
@@ -15,8 +15,25 @@ from app.config import (
 )
 from app.llms import HAS_LLM, build_default_llm
 from app.prompts import ENRICHMENT_SYSTEM_PROMPT
+from app.services.hunter import get_company_profile
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str, str, dict[str, Any] | None], None]
+
+
+def _emit_progress(
+	progress_cb: ProgressCallback | None,
+	stage: str,
+	status: str,
+	message: str,
+	data: dict[str, Any] | None = None,
+) -> None:
+	if progress_cb is None:
+		return
+	try:
+		progress_cb(stage, status, message, data)
+	except Exception:
+		pass
 
 STABLE_FIELDS = [
 	"official_name",
@@ -30,9 +47,21 @@ STABLE_FIELDS = [
 
 REFRESH_FIELDS = ["employee_count", "revenue"]
 
-ALL_ENRICH_FIELDS = STABLE_FIELDS + REFRESH_FIELDS
+AUXILIARY_FIELDS = [
+	"employee_count_display",
+	"company_linkedin_url",
+	"company_phone",
+	"company_tags",
+	"site_emails",
+	"aftermarket_site_emails",
+	"aftermarket_footprint",
+	"aftermarket_reason",
+]
+
+ALL_ENRICH_FIELDS = STABLE_FIELDS + REFRESH_FIELDS + AUXILIARY_FIELDS
 
 SOURCE_LABELS = {
+	"get_hunter_company_profile": "hunter_company_profile",
 	"enrich_from_technology_checker": "technology_checker",
 	"enrich_from_cufinder": "cufinder_enc",
 	"get_cufinder_revenue": "cufinder_car",
@@ -223,6 +252,15 @@ def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
 
 
 @tool
+def get_hunter_company_profile(domain: str) -> dict:
+	"""Fetches company profile, site emails, and lightweight aftermarket clues from Hunter."""
+	lookup_domain = _normalize_lookup_domain(domain)
+	if not lookup_domain:
+		return {}
+	return get_company_profile(lookup_domain)
+
+
+@tool
 def enrich_from_technology_checker(domain: str) -> dict:
 	"""Fetches company profile from Technology Checker. Use this first for any missing company fields."""
 	lookup_domain = _normalize_lookup_domain(domain)
@@ -358,6 +396,7 @@ def build_enrichment_agent() -> dict[str, Any] | None:
 		return None
 
 	tools = [
+		get_hunter_company_profile,
 		enrich_from_technology_checker,
 		enrich_from_cufinder,
 		get_cufinder_revenue,
@@ -463,6 +502,12 @@ def _run_required_refresh_tools(company_name: str, domain: str) -> list[tuple[st
 
 	results.append(
 		(
+			"get_hunter_company_profile",
+			_call_tool_direct(get_hunter_company_profile, {"domain": domain}) if domain else {},
+		)
+	)
+	results.append(
+		(
 			"enrich_from_technology_checker",
 			_call_tool_direct(enrich_from_technology_checker, {"domain": domain}) if domain else {},
 		)
@@ -501,9 +546,15 @@ def _apply_dict_tool_result(
 		if field_name not in ALL_ENRICH_FIELDS or _is_missing(value):
 			continue
 
-		if field_name in REFRESH_FIELDS:
+		if source == "hunter_company_profile":
 			merged[field_name] = value
 			field_sources[field_name] = source
+			continue
+
+		if field_name in REFRESH_FIELDS:
+			if _is_missing(merged.get(field_name)):
+				merged[field_name] = value
+				field_sources[field_name] = source
 			continue
 
 		if _is_missing(merged.get(field_name)):
@@ -586,6 +637,7 @@ def enrich_company(
 	company_name: str,
 	resolved_domain: str | None,
 	wikidata_data: dict[str, Any] | None,
+	progress_cb: ProgressCallback | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
 	wikidata_data = wikidata_data or {}
 
@@ -601,19 +653,38 @@ def enrich_company(
 	tool_events: list[tuple[str, Any]] = []
 	model_data: dict[str, Any] = {}
 
+	hunter_result = _call_tool_direct(get_hunter_company_profile, {"domain": domain}) if domain else {}
+	tool_events.append(("get_hunter_company_profile", hunter_result or {}))
+	if isinstance(hunter_result, dict) and hunter_result:
+		emit_message = "Hunter returned company profile data"
+		if hunter_result.get("description"):
+			emit_message = "Hunter returned a usable company description"
+		_emit_progress(progress_cb, "hunter.company", "completed", emit_message)
+		if hunter_result.get("aftermarket_footprint") is True:
+			_emit_progress(progress_cb, "hunter.aftermarket", "completed", "Hunter found positive aftermarket email evidence")
+	else:
+		_emit_progress(progress_cb, "hunter.company", "fallback", "Hunter company profile did not return usable company data")
+
 	tech_result = _call_tool_direct(enrich_from_technology_checker, {"domain": domain}) if domain else {}
 	tool_events.append(("enrich_from_technology_checker", tech_result or {}))
+	if isinstance(tech_result, dict) and tech_result:
+		_emit_progress(progress_cb, "technology_checker", "completed", "Technology Checker returned fallback company fields")
 
 	missing_stable_fields = [
 		field_name
 		for field_name in STABLE_FIELDS
 		if _is_missing(already_known.get(field_name))
+		and _is_missing((hunter_result or {}).get(field_name) if isinstance(hunter_result, dict) else None)
 		and _is_missing((tech_result or {}).get(field_name) if isinstance(tech_result, dict) else None)
 	]
 	if missing_stable_fields:
+		_emit_progress(progress_cb, "cufinder.enrichment", "info", "Trying CUFinder company enrichment fallback")
 		cufinder_result = _call_tool_direct(enrich_from_cufinder, {"company_name": company_name, "domain": domain}) or {}
 		tool_events.append(("enrich_from_cufinder", cufinder_result))
+		if isinstance(cufinder_result, dict) and cufinder_result:
+			_emit_progress(progress_cb, "cufinder.enrichment", "completed", "CUFinder returned fallback company fields")
 
+	_emit_progress(progress_cb, "revenue", "info", "Checking revenue sources")
 	tool_events.append(
 		(
 			"get_cufinder_revenue",
@@ -632,6 +703,11 @@ def enrich_company(
 		model_data=model_data,
 		wikidata_data=wikidata_data,
 	)
+	if merged_data.get("revenue"):
+		revenue_source = field_sources.get("revenue") if isinstance(field_sources.get("revenue"), str) else "enrichment"
+		_emit_progress(progress_cb, "revenue", "completed", f"Revenue available from {revenue_source}")
+	else:
+		_emit_progress(progress_cb, "revenue", "fallback", "Revenue was not found from the current providers")
 
 	return (merged_data, field_sources)
 

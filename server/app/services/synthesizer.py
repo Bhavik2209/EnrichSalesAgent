@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from app.cache import get_cached_research_response, set_cached_research_response
@@ -22,6 +22,7 @@ from app.models import ResearchResponse
 from app.prompts import build_opening_line_prompt, build_synthesis_prompt
 from app.services.aftermarket import detect_aftermarket
 from app.services.discovery import parse_wikidata_company, resolve_official_domain
+from app.services.discovery import _is_suspicious_official_domain as is_suspicious_official_domain
 from app.services.enrichment import enrich_company
 from app.services.geography import classify_hq_geography
 from app.services.people import find_key_person
@@ -29,6 +30,7 @@ from app.services.scraper import extract_what_they_make_from_text as extract_wha
 from app.services.scraper import get_about_page_text
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str, str, dict[str, Any] | None], None]
 
 WIKIDATA_PRIORITY_FIELDS = {
 	"official_name",
@@ -51,6 +53,21 @@ def _log_timing(company_name: str, stage: str, started_at: float) -> float:
 	message = f"[timing] company={company_name} stage={stage} took {elapsed:.2f}s"
 	logger.info(message)
 	return elapsed
+
+
+def _emit_progress(
+	progress_cb: ProgressCallback | None,
+	stage: str,
+	status: str,
+	message: str,
+	data: dict[str, Any] | None = None,
+) -> None:
+	if progress_cb is None:
+		return
+	try:
+		progress_cb(stage, status, message, data)
+	except Exception:
+		pass
 
 
 def _timed_call(company_name: str, stage: str, func: Any, *args: Any) -> Any:
@@ -295,11 +312,6 @@ def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> 
 		"hq_city": _clean_for_sentence(data.get("hq_city"), max_len=80) or None,
 		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,
 		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
-		"recent_news_titles": [
-			_clean_for_sentence(item.get("title"), max_len=140)
-			for item in (data.get("recent_news") or [])
-			if isinstance(item, dict) and _clean_for_sentence(item.get("title"), max_len=140)
-		][:3],
 	}
 	prompt = build_opening_line_prompt(company_name, prompt_data)
 	candidates: list[tuple[str, str]] = []
@@ -381,10 +393,11 @@ def run_llm_synthesis(
 		return {}
 
 
-async def _step1_discovery(company_name: str, extra_context: str, notes: list[str], sources: list[str], data: dict[str, Any], field_sources: dict[str, str]) -> tuple[str | None, dict[str, Any]]:
+async def _step1_discovery(company_name: str, extra_context: str, notes: list[str], sources: list[str], data: dict[str, Any], field_sources: dict[str, str], progress_cb: ProgressCallback | None = None) -> tuple[str | None, dict[str, Any]]:
 	resolved_domain: str | None = None
 	wikidata: dict[str, Any] = {}
 	try:
+		_emit_progress(progress_cb, "discovery.start", "info", "Resolving official website and Wikidata profile")
 		domain_result, wikidata_result = await asyncio.gather(
 			asyncio.to_thread(_run_sync_or_async_in_thread, resolve_official_domain, company_name, extra_context),
 			asyncio.to_thread(_run_sync_or_async_in_thread, parse_wikidata_company, company_name),
@@ -407,6 +420,11 @@ async def _step1_discovery(company_name: str, extra_context: str, notes: list[st
 		if not resolved_domain and wikidata.get("website"):
 			resolved_domain = str(wikidata.get("website"))
 			notes.append("Used Wikidata website as resolved domain fallback")
+			_emit_progress(progress_cb, "discovery.domain", "fallback", "Used Wikidata website as the resolved domain fallback")
+		elif is_suspicious_official_domain(resolved_domain) and wikidata.get("website"):
+			resolved_domain = str(wikidata.get("website"))
+			notes.append("Replaced suspicious resolved domain with Wikidata website")
+			_emit_progress(progress_cb, "discovery.domain", "fallback", "Replaced a suspicious domain candidate with the Wikidata website")
 
 		merge_into(data, wikidata, field_sources, "wikidata", skip_if_present=set())
 		if _is_weak_description(data.get("description")):
@@ -414,8 +432,10 @@ async def _step1_discovery(company_name: str, extra_context: str, notes: list[st
 			if search_description:
 				data["description"] = search_description
 				field_sources["description"] = "discovery_search_snippet"
+				_emit_progress(progress_cb, "discovery.description", "fallback", "Used a search snippet as a temporary description fallback")
 		if wikidata.get("wikidata_url"):
 			sources.append(str(wikidata.get("wikidata_url")))
+		_emit_progress(progress_cb, "discovery.complete", "completed", "Discovery complete", {"resolved_domain": resolved_domain or ""})
 	except Exception as exc:
 		notes.append(f"Discovery step failed: {exc}")
 	return (resolved_domain, wikidata)
@@ -429,6 +449,14 @@ def _merge_enrichment_fields(data: dict[str, Any], field_sources: dict[str, str]
 		data[field] = value
 		field_sources[field] = _source_label_for_key(enrich_sources, field, "enrichment")
 
+	for field_name, value in enrichment_data.items():
+		if _is_empty(value):
+			continue
+		if _source_label_for_key(enrich_sources, field_name, "") != "hunter_company_profile":
+			continue
+		data[field_name] = value
+		field_sources[field_name] = "hunter_company_profile"
+
 	merge_into(
 		data,
 		enrichment_data,
@@ -436,6 +464,65 @@ def _merge_enrichment_fields(data: dict[str, Any], field_sources: dict[str, str]
 		enrich_sources or "enrichment",
 		skip_if_present=WIKIDATA_PRIORITY_FIELDS,
 	)
+
+
+def _preserve_hunter_aftermarket_signal(data: dict[str, Any], aftermarket_data: dict[str, Any]) -> dict[str, Any]:
+	if not isinstance(aftermarket_data, dict):
+		return {}
+
+	if data.get("aftermarket_footprint") is True:
+		patched = dict(aftermarket_data)
+		patched.pop("aftermarket_footprint", None)
+		patched.pop("aftermarket_reason", None)
+		return patched
+
+	return aftermarket_data
+
+
+def _has_hunter_description(enrichment_data: dict[str, Any], enrich_sources: dict[str, str]) -> bool:
+	description = enrichment_data.get("description")
+	return (
+		not _is_empty(description)
+		and not _is_weak_description(description)
+		and _source_label_for_key(enrich_sources, "description", "") == "hunter_company_profile"
+	)
+
+
+def _has_hunter_aftermarket_signal(enrichment_data: dict[str, Any], enrich_sources: dict[str, str]) -> bool:
+	return (
+		enrichment_data.get("aftermarket_footprint") is True
+		and _source_label_for_key(enrich_sources, "aftermarket_footprint", "") == "hunter_company_profile"
+	)
+
+
+def _derive_what_they_make_from_tags(tags: Any) -> str | None:
+	if not isinstance(tags, list):
+		return None
+
+	clean_tags = [
+		re.sub(r"\s+", " ", str(tag or "")).strip()
+		for tag in tags
+		if isinstance(tag, str) and str(tag).strip()
+	]
+	if not clean_tags:
+		return None
+
+	generic = {
+		"manufacturing",
+		"automation",
+		"supply chain",
+		"production efficiency",
+		"it solutions",
+	}
+	preferred = [tag for tag in clean_tags if tag.lower() not in generic]
+	selected = preferred[:4] if preferred else clean_tags[:4]
+	if not selected:
+		return None
+	if len(selected) == 1:
+		return selected[0]
+	if len(selected) == 2:
+		return f"{selected[0]} and {selected[1]}"
+	return f"{', '.join(selected[:-1])}, and {selected[-1]}"
 
 
 def _apply_hq_geography(data: dict[str, Any], field_sources: dict[str, str]) -> None:
@@ -494,6 +581,7 @@ async def _step2_parallel_services(
 	sources: list[str],
 	data: dict[str, Any],
 	field_sources: dict[str, str],
+	progress_cb: ProgressCallback | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any], str]:
 	enrichment_data: dict[str, Any] = {}
 	enrich_sources: dict[str, str] = {}
@@ -502,41 +590,92 @@ async def _step2_parallel_services(
 	about_text = ""
 
 	try:
-		enrich_result, scraper_result, aftermarket_result = await asyncio.gather(
-			asyncio.to_thread(_timed_call, company_name, "step2.enrich_company", enrich_company, company_name, resolved_domain, wikidata),
-			asyncio.to_thread(
-				_timed_call,
-				company_name,
-				"step2.get_about_page_text",
-				get_about_page_text,
-				resolved_domain or "",
-				str(wikidata.get("website") or ""),
-			),
-			asyncio.to_thread(
-				_timed_call,
-				company_name,
-				"step2.detect_aftermarket",
-				detect_aftermarket,
-				resolved_domain or "",
-				str(wikidata.get("website") or ""),
-			),
-			return_exceptions=True,
+		_emit_progress(progress_cb, "enrichment.start", "info", "Fetching company profile and enrichment providers")
+		enrich_result = await asyncio.to_thread(
+			_timed_call,
+			company_name,
+			"step2.enrich_company",
+			enrich_company,
+			company_name,
+			resolved_domain,
+			wikidata,
+			progress_cb,
 		)
 		enrichment_data, enrich_sources = _unpack_enrichment_result(enrich_result, notes)
-		scraper_dict, scraper_label, about_text = _unpack_scraper_result(scraper_result, notes)
-		if isinstance(aftermarket_result, Exception):
-			notes.append(f"Aftermarket detection failed: {aftermarket_result}")
-		elif isinstance(aftermarket_result, dict):
-			aftermarket_data = aftermarket_result
 
 		_merge_enrichment_fields(data, field_sources, enrichment_data, enrich_sources)
-		merge_into(data, scraper_dict, field_sources, scraper_label, skip_if_present={"description"})
-		merge_into(data, aftermarket_data, field_sources, "aftermarket_detector", skip_if_present=set())
-		if scraper_dict.get("source_url"):
-			sources.append(str(scraper_dict.get("source_url")))
-		for aftermarket_key in ("parts_page", "service_page", "support_page", "customer_portal_page"):
-			if isinstance(aftermarket_data.get(aftermarket_key), str) and aftermarket_data.get(aftermarket_key):
-				sources.append(str(aftermarket_data.get(aftermarket_key)))
+
+		needs_scraper = not _has_hunter_description(enrichment_data, enrich_sources)
+		needs_aftermarket_detector = not _has_hunter_aftermarket_signal(enrichment_data, enrich_sources)
+
+		async_calls: list[Any] = []
+		call_names: list[str] = []
+		if needs_scraper:
+			async_calls.append(
+				asyncio.to_thread(
+					_timed_call,
+					company_name,
+					"step2.get_about_page_text",
+					get_about_page_text,
+					resolved_domain or "",
+					str(wikidata.get("website") or ""),
+					progress_cb,
+				)
+			)
+			call_names.append("scraper")
+		else:
+			notes.append("Skipped website description scrape because Hunter already provided a usable description")
+			_emit_progress(progress_cb, "scraper", "skipped", "Skipping website scrape because Hunter already provided a usable description")
+
+		if needs_aftermarket_detector:
+			async_calls.append(
+				asyncio.to_thread(
+					_timed_call,
+					company_name,
+					"step2.detect_aftermarket",
+					detect_aftermarket,
+					resolved_domain or "",
+					str(wikidata.get("website") or ""),
+				)
+			)
+			call_names.append("aftermarket")
+		else:
+			notes.append("Skipped website aftermarket detection because Hunter already provided positive aftermarket evidence")
+			_emit_progress(progress_cb, "aftermarket", "skipped", "Skipping website aftermarket detection because Hunter already provided positive aftermarket evidence")
+
+		if async_calls:
+			async_results = await asyncio.gather(*async_calls, return_exceptions=True)
+			for call_name, call_result in zip(call_names, async_results):
+				if call_name == "scraper":
+					scraper_dict, scraper_label, about_text = _unpack_scraper_result(call_result, notes)
+					_emit_progress(progress_cb, "scraper", "completed", f"Website profile scrape completed via {scraper_label}")
+					merge_into(data, scraper_dict, field_sources, scraper_label, skip_if_present={"description"})
+					if scraper_dict.get("source_url"):
+						sources.append(str(scraper_dict.get("source_url")))
+				elif call_name == "aftermarket":
+					if isinstance(call_result, Exception):
+						notes.append(f"Aftermarket detection failed: {call_result}")
+					elif isinstance(call_result, dict):
+						aftermarket_data = call_result
+						_emit_progress(progress_cb, "aftermarket", "completed", "Website aftermarket analysis completed")
+						merge_into(
+							data,
+							_preserve_hunter_aftermarket_signal(data, aftermarket_data),
+							field_sources,
+							"aftermarket_detector",
+							skip_if_present=set(),
+						)
+						for aftermarket_key in ("parts_page", "service_page", "support_page", "customer_portal_page"):
+							if isinstance(aftermarket_data.get(aftermarket_key), str) and aftermarket_data.get(aftermarket_key):
+								sources.append(str(aftermarket_data.get(aftermarket_key)))
+
+		if _is_empty(data.get("what_they_make")):
+			tags_based = _derive_what_they_make_from_tags(enrichment_data.get("company_tags"))
+			if tags_based:
+				data["what_they_make"] = tags_based
+				field_sources["what_they_make"] = "hunter_tags"
+				about_text = about_text or str(enrichment_data.get("description") or "")
+				_emit_progress(progress_cb, "what_they_make", "fallback", "Derived what the company makes from Hunter tags")
 	except Exception as exc:
 		notes.append(f"Parallel service step failed: {exc}")
 
@@ -551,10 +690,12 @@ async def _step3_sequential(
 	about_text: str,
 	data: dict[str, Any],
 	field_sources: dict[str, str],
+	progress_cb: ProgressCallback | None = None,
 ) -> None:
 	try:
 		if resolved_domain:
 			try:
+				_emit_progress(progress_cb, "people.start", "info", "Finding the best booth contact")
 				people_result = await asyncio.to_thread(
 					_timed_call,
 					company_name,
@@ -564,6 +705,7 @@ async def _step3_sequential(
 					resolved_domain,
 					aftermarket_data,
 					enrichment_data,
+					progress_cb,
 				)
 				if isinstance(people_result, dict):
 					person_mapping = {
@@ -571,6 +713,7 @@ async def _step3_sequential(
 						"title": "target_person_title",
 						"linkedin_url": "target_person_linkedin_url",
 						"email": "target_person_email",
+						"confidence": "target_person_confidence",
 						"source": "target_person_source",
 						"suggested_title": "suggested_target_title",
 						"suggested_title_reasoning": "suggested_target_title_reasoning",
@@ -581,11 +724,14 @@ async def _step3_sequential(
 							continue
 						data[dst_key] = value
 						field_sources[dst_key] = "people_service"
+					if people_result.get("name") or people_result.get("title"):
+						_emit_progress(progress_cb, "people.complete", "completed", "Contact targeting completed")
 			except Exception:
 				pass
 
 		if _is_empty(data.get("what_they_make")) and about_text:
 			try:
+				_emit_progress(progress_cb, "what_they_make", "info", "Extracting what the company makes from profile text")
 				wtm = await asyncio.to_thread(
 					_timed_call,
 					company_name,
@@ -596,12 +742,14 @@ async def _step3_sequential(
 				if not _is_empty(wtm):
 					data["what_they_make"] = wtm
 					field_sources["what_they_make"] = "scraper_regex"
+					_emit_progress(progress_cb, "what_they_make", "completed", "Extracted what the company makes from profile text")
 			except Exception:
 				pass
 		if _is_empty(data.get("personalized_opening_line")):
 			llm_opening_line = None
 			llm_provider = None
 			try:
+				_emit_progress(progress_cb, "opening_line", "info", "Generating a personalized opening line")
 				llm_opening_line, llm_provider = await asyncio.to_thread(
 					generate_opening_line_with_llms,
 					company_name,
@@ -615,6 +763,7 @@ async def _step3_sequential(
 				field_sources["personalized_opening_line"] = (
 					f"opening_line_llm_{llm_provider}" if llm_opening_line and llm_provider else "opening_line_generator"
 				)
+				_emit_progress(progress_cb, "opening_line", "completed", "Opening line ready")
 	except Exception:
 		pass
 
@@ -639,6 +788,7 @@ def _step5_collect_sources(
 		_append_if_url(norm_domain)
 
 		_append_if_url(scraper_dict.get("source_url"))
+		_append_if_url(data.get("company_linkedin_url"))
 
 		for news_item in data.get("recent_news", []) if isinstance(data.get("recent_news", []), list) else []:
 			if isinstance(news_item, dict):
@@ -686,9 +836,11 @@ async def research_company(
 	company_name: str,
 	extra_context: str = "",
 	requested_fields: list[str] | None = None,
+	progress_cb: ProgressCallback | None = None,
 ) -> ResearchResponse:
 	total_started_at = time.perf_counter()
 
+	_emit_progress(progress_cb, "cache.lookup", "info", f"Checking cache for {company_name}")
 	cached_payload = await asyncio.to_thread(
 		get_cached_research_response,
 		company_name,
@@ -696,8 +848,10 @@ async def research_company(
 		requested_fields,
 	)
 	if isinstance(cached_payload, dict):
+		_emit_progress(progress_cb, "cache.lookup", "cache_hit", "Cache hit. Returning cached research response")
 		_log_timing(company_name, "total_research_cache_hit", total_started_at)
 		return ResearchResponse(**cached_payload)
+	_emit_progress(progress_cb, "cache.lookup", "completed", "No cache hit. Running live research")
 
 	notes: list[str] = []
 	sources: list[str] = []
@@ -705,7 +859,7 @@ async def research_company(
 	field_sources: dict[str, str] = {}
 
 	stage_started_at = time.perf_counter()
-	resolved_domain, wikidata = await _step1_discovery(company_name, extra_context, notes, sources, data, field_sources)
+	resolved_domain, wikidata = await _step1_discovery(company_name, extra_context, notes, sources, data, field_sources, progress_cb)
 	_log_timing(company_name, "step1_discovery", stage_started_at)
 
 	stage_started_at = time.perf_counter()
@@ -717,6 +871,7 @@ async def research_company(
 		sources,
 		data,
 		field_sources,
+		progress_cb,
 	)
 	_log_timing(company_name, "step2_parallel_services", stage_started_at)
 	_apply_hq_geography(data, field_sources)
@@ -739,6 +894,7 @@ async def research_company(
 		about_text,
 		data,
 		field_sources,
+		progress_cb,
 	)
 	_log_timing(company_name, "step3_sequential", stage_started_at)
 
@@ -760,6 +916,7 @@ async def research_company(
 	data, field_sources = _remove_internal_fields(data, field_sources)
 	total_elapsed = _log_timing(company_name, "total_research", total_started_at)
 	notes.append(f"Timing total_research={total_elapsed:.2f}s")
+	_emit_progress(progress_cb, "research.complete", "completed", "Briefing complete. Returning result")
 
 	response = ResearchResponse(
 		company_name=company_name,

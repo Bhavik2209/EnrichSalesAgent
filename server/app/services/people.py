@@ -3,53 +3,29 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Callable
 
-from app.config import HUNTER_API_KEY, REQUEST_TIMEOUT, SESSION
 from app.llms import HAS_LLM, build_default_json_llm
 from app.prompts import build_people_title_prompt
+from app.services.hunter import extract_domain, get_people, normalize_employee_count, pick_best_contact
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str, str, dict[str, Any] | None], None]
 
-PREFERRED_TITLE_KEYWORDS = (
-	"aftermarket",
-	"after-market",
-	"after market",
-	"service",
-	"spare parts",
-	"parts",
-	"sales",
-	"commercial",
-	"business development",
-	"customer success",
-	"field service",
-)
 
-PREFERRED_SENIORITY = {"executive", "director", "vp"}
-
-def extract_domain(value: str) -> str:
+def _emit_progress(
+	progress_cb: ProgressCallback | None,
+	stage: str,
+	status: str,
+	message: str,
+	data: dict[str, Any] | None = None,
+) -> None:
+	if progress_cb is None:
+		return
 	try:
-		parsed = urlparse(value if "://" in value else f"https://{value}")
-		host = (parsed.netloc or parsed.path).split(":")[0].lower().strip()
-		return re.sub(r"^www\.", "", host)
+		progress_cb(stage, status, message, data)
 	except Exception:
-		return str(value or "").lower().strip()
-
-
-def _hunter_domain_candidates(domain: str) -> list[str]:
-	clean_domain = extract_domain(domain)
-	if not clean_domain:
-		return []
-
-	parts = [part for part in clean_domain.split(".") if part]
-	candidates: list[str] = []
-	last_start = max(0, len(parts) - 2)
-	for index in range(0, last_start + 1):
-		candidate = ".".join(parts[index:])
-		if candidate and candidate not in candidates:
-			candidates.append(candidate)
-	return candidates
+		pass
 
 
 def _normalize_text(value: Any) -> str | None:
@@ -70,90 +46,10 @@ def _normalize_linkedin(value: Any) -> str | None:
 	return f"https://linkedin.com/in/{linkedin.lstrip('/')}"
 
 
-def _is_likely_person_name(value: Any) -> bool:
-	text = _normalize_text(value)
-	if not text or len(text.split()) < 2:
-		return False
-	if any(token in text.lower() for token in ("team", "leadership", "management", "company", "about")):
-		return False
-	return bool(re.match(r"^[A-Z][A-Za-z\-\.'`]+(?:\s+[A-Z][A-Za-z\-\.'`]+){1,4}$", text))
-
-
-def _score_hunter_person(person: dict[str, Any]) -> int:
-	title = str(person.get("position") or "").lower()
-	seniority = str(person.get("seniority") or "").lower()
-	score = 0
-	if seniority in PREFERRED_SENIORITY:
-		score += 3
-	for keyword in PREFERRED_TITLE_KEYWORDS:
-		if keyword in title:
-			score += 5
-			break
-	if person.get("linkedin"):
-		score += 1
-	if person.get("confidence"):
-		try:
-			score += min(int(person.get("confidence") or 0) // 20, 4)
-		except Exception:
-			pass
-	return score
-
-
-def search_hunter(domain: str) -> dict[str, Any] | None:
-	domain_candidates = _hunter_domain_candidates(domain)
-	if not domain_candidates or not HUNTER_API_KEY:
-		return None
-
-	for candidate_domain in domain_candidates:
-		try:
-			response = SESSION.get(
-				"https://api.hunter.io/v2/domain-search",
-				params={
-					"domain": candidate_domain,
-					"seniority": "director,executive,vp",
-					"api_key": HUNTER_API_KEY,
-				},
-				timeout=REQUEST_TIMEOUT,
-			)
-			response.raise_for_status()
-			payload = response.json()
-			data = payload.get("data", {}) if isinstance(payload, dict) else {}
-			emails = data.get("emails", []) if isinstance(data, dict) else []
-			if not isinstance(emails, list) or not emails:
-				continue
-
-			scored = sorted(
-				[item for item in emails if isinstance(item, dict)],
-				key=_score_hunter_person,
-				reverse=True,
-			)
-			if not scored:
-				continue
-
-			best = scored[0]
-			name = _normalize_text(f"{best.get('first_name', '')} {best.get('last_name', '')}")
-			title = _normalize_text(best.get("position") or best.get("seniority"))
-			if not _is_likely_person_name(name) or not title:
-				continue
-
-			return {
-				"name": name,
-				"title": title,
-				"linkedin_url": _normalize_linkedin(best.get("linkedin")),
-				"email": _normalize_text(best.get("value")),
-				"source": "hunter",
-			}
-		except Exception as exc:
-			logger.warning("Hunter lookup failed for %s: %s", candidate_domain, exc)
-			continue
-
-	return None
-
-
 def suggest_title_from_context(aftermarket_data: dict[str, Any], enrichment_data: dict[str, Any]) -> dict[str, str]:
 	employee_count = 0
 	try:
-		employee_count = int(re.sub(r"\D", "", str(enrichment_data.get("employee_count") or "")) or "0")
+		employee_count = int(normalize_employee_count(enrichment_data.get("employee_count")) or "0")
 	except Exception:
 		employee_count = 0
 
@@ -253,23 +149,38 @@ def find_key_person(
 	resolved_domain: str,
 	aftermarket_data: dict[str, Any],
 	enrichment_data: dict[str, Any],
+	progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
 	result = {
 		"name": None,
 		"title": None,
 		"linkedin_url": None,
 		"email": None,
+		"confidence": None,
 		"source": "none",
 		"suggested_title": None,
 		"suggested_title_reasoning": None,
 	}
 
 	try:
-		hunter_person = search_hunter(resolved_domain)
+		_emit_progress(progress_cb, "people.hunter", "info", f"Fetching Hunter contacts for {extract_domain(resolved_domain)}")
+		hunter_people = get_people(resolved_domain)
+		hunter_person = pick_best_contact(hunter_people)
 		if hunter_person:
-			result.update(hunter_person)
+			result.update(
+				{
+					"name": hunter_person.get("name"),
+					"title": hunter_person.get("title"),
+					"linkedin_url": _normalize_linkedin(hunter_person.get("linkedin_url")),
+					"email": _normalize_text(hunter_person.get("email")),
+					"source": hunter_person.get("source") or "hunter",
+					"confidence": hunter_person.get("confidence"),
+				}
+			)
+			_emit_progress(progress_cb, "people.hunter", "completed", f"Selected Hunter contact: {result.get('title') or result.get('name')}")
 			return result
 
+		_emit_progress(progress_cb, "people.hunter", "fallback", "Hunter did not return a strong named contact, falling back to title suggestion")
 		title_suggestion = suggest_title_with_llm(
 			company_name=company_name,
 			resolved_domain=extract_domain(resolved_domain),
@@ -280,6 +191,7 @@ def find_key_person(
 		result["suggested_title"] = title_suggestion.get("suggested_title")
 		result["suggested_title_reasoning"] = title_suggestion.get("reasoning")
 		result["title"] = title_suggestion.get("suggested_title")
+		_emit_progress(progress_cb, "people.title", "completed", f"Selected fallback title: {result.get('title') or 'unknown'}")
 		return result
 	except Exception as exc:
 		logger.warning("find_key_person failed for %s: %s", company_name, exc)

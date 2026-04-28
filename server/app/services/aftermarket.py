@@ -27,6 +27,9 @@ COMMON_AFTERMARKET_PATHS = (
 	"/service",
 	"/services",
 	"/support",
+	"/suppliers",
+	"/supplier-portal",
+	"/suppliers-portal",
 	"/help",
 	"/portal",
 	"/customer-portal",
@@ -82,7 +85,7 @@ AFTERMARKET_KEYWORDS = {
 	"parts_page": ["parts", "spare parts", "replacement parts", "genuine parts", "parts and service"],
 	"service_page": ["service", "services", "maintenance", "repair", "field service", "after sales"],
 	"support_page": ["support", "technical support", "help", "customer support", "faq", "knowledge base"],
-	"customer_portal_page": ["portal", "customer portal", "dealer portal", "login", "sign in", "my account", "dealer login"],
+	"customer_portal_page": ["portal", "customer portal", "dealer portal", "supplier portal", "suppliers portal", "login", "sign in", "my account", "dealer login", "supplier login"],
 }
 
 
@@ -239,7 +242,7 @@ def _score_single_aftermarket_link(link: dict[str, str], groups: dict[str, list[
 	for key, keywords in groups.items():
 		scores[key] = _score_bucket_aftermarket(url_l, anchor_l, keywords)
 
-	if any(token in combined for token in ("portal", "login", "dealer")):
+	if any(token in combined for token in ("portal", "login", "dealer", "supplier")):
 		scores["customer_portal_page"] = int(scores["customer_portal_page"]) + 2
 
 	if max((int(v) for v in scores.values()), default=0) <= 0:
@@ -307,7 +310,7 @@ def _build_aftermarket_reason(result: dict[str, Any]) -> str:
 	if result.get("support_page"):
 		reasons.append("Support section found")
 	if result.get("customer_portal_page"):
-		reasons.append("Customer/dealer portal appears to exist")
+		reasons.append("Customer/dealer/supplier portal appears to exist")
 	return " | ".join(reasons) if reasons else "No aftermarket links detected."
 
 
@@ -332,7 +335,7 @@ def _first_clue_result(best_links: dict[str, str | None]) -> dict[str, Any]:
 		("parts_page", "Parts section found"),
 		("service_page", "Service section found"),
 		("support_page", "Support section found"),
-		("customer_portal_page", "Customer/dealer portal appears to exist"),
+		("customer_portal_page", "Customer/dealer/supplier portal appears to exist"),
 	):
 		value = best_links.get(field_name)
 		if not value:
@@ -396,7 +399,7 @@ def detect_aftermarket(resolved_domain: str, website_url: str | None = None) -> 
 				return _first_clue_result(combined_fast_links)
 
 			best_links = combined_fast_links
-			if not _has_strong_aftermarket_signal(best_links) and len(homepage_links) < 25:
+			if not _has_strong_aftermarket_signal(best_links):
 				sitemap_links = fetch_links_from_sitemap(domain)
 				all_links = _dedupe_links(homepage_links + probed_links + sitemap_links)
 				scored_links = score_links_for_aftermarket(all_links)

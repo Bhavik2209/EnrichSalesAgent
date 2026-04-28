@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -12,6 +13,7 @@ from app.config import CACHE_DB_PATH, CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
+CACHE_KEY_VERSION = "v3"
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -33,7 +35,9 @@ def _get_connection() -> sqlite3.Connection:
 
 
 def _normalize_company_name(company_name: str) -> str:
-	return " ".join(str(company_name or "").strip().lower().split())
+	raw = str(company_name or "").strip().lower()
+	raw = re.sub(r"[^a-z0-9]+", " ", raw)
+	return " ".join(raw.split())
 
 
 def _normalize_extra_context(extra_context: str) -> str:
@@ -52,6 +56,7 @@ def build_research_cache_key(
 	requested_fields: list[str] | None = None,
 ) -> str:
 	key_payload = {
+		"cache_version": CACHE_KEY_VERSION,
 		"company_name": _normalize_company_name(company_name),
 		"extra_context": _normalize_extra_context(extra_context),
 		"requested_fields": _normalize_requested_fields(requested_fields),

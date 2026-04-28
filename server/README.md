@@ -38,6 +38,7 @@ server/
       ├─ discovery.py
       ├─ enrichment.py
       ├─ geography.py
+      ├─ hunter.py
       ├─ news.py
       ├─ people.py
       ├─ scraper.py
@@ -115,19 +116,36 @@ File:
 
 Responsibilities:
 - Pulls company metadata from external enrichment providers
-- Uses Technology Checker first
-- Uses CUFinder only when needed
-- Always refreshes volatile fields like:
-  - `employee_count`
-  - `revenue`
+- Uses Hunter first once a domain is resolved
+- Uses Technology Checker as a secondary fallback source
+- Uses CUFinder mainly as a revenue fallback, plus last-resort gap fill when needed
+- Merges provider data into one normalized company profile
 
 Key behavior:
-- Technology Checker description is shortened to 2 to 3 sentences max
-- Wikidata remains the preferred source for stable fields when already present
+- Hunter can provide:
+  - `official_name`
+  - `description`
+  - `founded_year`
+  - `hq_city`
+  - `hq_country`
+  - `industry`
+  - `employee_count`
+  - `company_linkedin_url`
+  - `company_phone`
+  - `company_tags`
+  - `site_emails`
+  - `aftermarket_site_emails`
+- Hunter is now the first-priority enrichment source for most company profile fields
+- If Hunter returns a usable `description`, that description is kept and scraper/Wikidata only act as fallback
+- If Hunter returns positive aftermarket evidence such as service or spare-parts emails, that positive signal is preserved
+- CUFinder is still used when `revenue` is missing after Hunter and other sources
+- Technology Checker description is shortened before merge
+- Wikidata remains a structured fallback when enrichment providers are missing data
 
 Primary sources:
+- Hunter
 - Technology Checker
-- CUFinder
+- CUFinder revenue fallback
 - Wikidata fallback
 
 ### 5. Website Scraping Layer
@@ -147,8 +165,10 @@ Behavior:
 - Direct HTML fetch is tried first
 - Firecrawl is used only if direct fetch is too weak
 - LLM is used only when regex extraction and factual fallback are not enough
+- Website description is used only when Hunter did not already provide a usable description
 
 Description rules:
+- Hunter description has first priority when present and non-weak
 - If description comes from LLM, it is kept very short
 - If description comes from website text, it is capped at 3 to 4 sentences max
 
@@ -161,6 +181,7 @@ Responsibilities:
 - Detects whether the company shows aftermarket/service/parts/support signals
 
 Current behavior:
+- If Hunter already found positive aftermarket evidence, the detector does not overwrite it with `false`
 - Uses first-clue mode
 - Stops once one strong clue is found
 - Returns only one main aftermarket signal instead of building a full aftermarket map
@@ -182,6 +203,8 @@ Responsibilities:
 
 Behavior:
 - Hunter is tried first for real contacts
+- Hunter people scoring now prefers aftermarket, parts, service, field-service, commercial, and business-development roles
+- Hunter people scoring penalizes misleading non-owner roles such as IT or `ServiceNow` titles
 - If no real person is found, the service suggests the best title based on:
   - aftermarket clues
   - employee count
@@ -192,6 +215,7 @@ Outputs include:
 - `target_person_title`
 - `target_person_linkedin_url`
 - `target_person_email`
+- `target_person_confidence`
 - `target_person_source`
 - `suggested_target_title`
 - `suggested_target_title_reasoning`
@@ -340,9 +364,17 @@ Order:
 ### Company Enrichment
 
 Order:
+- Hunter company profile
 - Technology Checker
-- CUFinder
+- CUFinder revenue fallback
+- CUFinder remaining fallback when required
 - Wikidata fallback for remaining stable fields
+
+Description priority:
+- Hunter description
+- website/about-page description
+- Wikidata description
+- search snippet fallback
 
 ### HQ Geography
 
@@ -359,12 +391,27 @@ Order:
 - LLM extraction
 - factual sentence fallback
 
+Note:
+- this branch is a fallback for `description`
+- it still contributes `what_they_make` and `source_url` even when Hunter already supplied the main description
+
 ### People Targeting
 
 Order:
 - Hunter real contact lookup
 - LLM title suggestion
 - heuristic title suggestion
+
+Important note:
+- Hunter people are scored to prefer aftermarket, service, parts, field-service, commercial, and business-development ownership roles
+- misleading titles such as HR, finance, IT, or `ServiceNow` are penalized
+
+### Aftermarket Signals
+
+Order:
+- Hunter aftermarket email evidence
+- website aftermarket detector
+- no negative overwrite of an existing positive Hunter signal
 
 ### Opening Line
 
@@ -378,7 +425,10 @@ Order:
 Every returned field can have a source in `field_sources`.
 
 Examples:
+- `hunter_company_profile`
 - `technology_checker`
+- `cufinder_car`
+- `cufinder_enc`
 - `wikidata`
 - `direct`
 - `aftermarket_detector`
@@ -386,6 +436,15 @@ Examples:
 - `opening_line_llm_groq:qwen/qwen3-32b`
 
 This makes it easier to debug the response and understand which provider produced each field.
+
+Typical Hunter-derived fields now include:
+- `description`
+- `company_linkedin_url`
+- `company_phone`
+- `company_tags`
+- `site_emails`
+- `aftermarket_site_emails`
+- `target_person_confidence`
 
 ## API
 

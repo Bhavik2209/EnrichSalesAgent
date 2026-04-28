@@ -58,6 +58,40 @@ COMPANY_HINTS = {
 	"co",
 }
 
+NON_COMPANY_DESCRIPTION_HINTS = {
+	"person",
+	"film",
+	"album",
+	"book",
+	"ship",
+	"city",
+	"village",
+	"mountain",
+	"lake",
+	"river",
+	"school",
+	"railway station",
+	"municipality",
+	"district",
+	"footballer",
+	"song",
+}
+
+SUSPICIOUS_DOMAIN_TOKENS = {
+	"careers",
+	"career",
+	"jobs",
+	"job",
+	"apply",
+	"recruit",
+	"recruiting",
+	"talent",
+	"login",
+	"signin",
+	"portal",
+	"dealer",
+}
+
 
 def extract_domain(url: str) -> str:
 	try:
@@ -101,7 +135,17 @@ def score_candidate_url(url: str, company_name: str) -> float:
 	if domain.endswith(".com") or domain.endswith(".co") or domain.endswith(".de") or domain.endswith(".jp"):
 		score += 0.1
 
+	if any(token in domain for token in SUSPICIOUS_DOMAIN_TOKENS):
+		score -= 0.6
+
 	return score
+
+
+def _is_suspicious_official_domain(url: str | None) -> bool:
+	domain = extract_domain(str(url or ""))
+	if not domain:
+		return True
+	return any(token in domain for token in SUSPICIOUS_DOMAIN_TOKENS)
 
 
 def search_tavily(company_name: str, extra_context: str = "", max_results: int = 5) -> list[dict[str, str]]:
@@ -265,7 +309,7 @@ def _pick_best_wikidata_result(results: list[dict[str, Any]], company_name: str)
 
 		if any(keyword in description for keyword in COMPANY_HINTS):
 			score += 2.0
-		if any(keyword in description for keyword in {"person", "film", "album", "book", "ship", "city", "village", "mountain"}):
+		if any(keyword in description for keyword in NON_COMPANY_DESCRIPTION_HINTS):
 			score -= 2.0
 
 		similarity = SequenceMatcher(None, name_lower, label).ratio()
