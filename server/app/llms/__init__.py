@@ -10,6 +10,7 @@ from .clients import (
 	build_default_llm,
 	build_gemini_llm,
 	build_groq_llm,
+	invoke_llm_with_retry,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
 	"build_groq_llm",
 	"build_default_llm",
 	"build_default_json_llm",
+	"invoke_llm_with_retry",
 ]

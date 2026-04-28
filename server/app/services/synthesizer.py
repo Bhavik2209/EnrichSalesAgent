@@ -22,6 +22,7 @@ from app.llms import (
 	OPENING_LINE_SECONDARY_GROQ_MODEL,
 	build_default_json_llm,
 	build_groq_llm,
+	invoke_llm_with_retry,
 )
 from app.models import ResearchResponse
 from app.prompts import build_opening_line_prompt, build_synthesis_prompt
@@ -265,7 +266,7 @@ def _build_opening_line(company_name: str, data: dict[str, Any]) -> str | None:
 	return None
 
 
-def _normalize_opening_line_candidate(raw: Any, company_name: str) -> str | None:
+def _normalize_opening_line_candidate(raw: Any, company_names: list[str]) -> str | None:
 	if isinstance(raw, dict):
 		raw = raw.get("personalized_opening_line")
 	text = re.sub(r"\s+", " ", str(raw or "")).strip().strip('"').strip("'")
@@ -283,7 +284,12 @@ def _normalize_opening_line_candidate(raw: Any, company_name: str) -> str | None
 	)
 	if any(fragment in lower for fragment in rejected_fragments):
 		return None
-	if company_name.lower() not in lower:
+	normalized_company_names = {
+		re.sub(r"\s+", " ", str(name or "")).strip().lower()
+		for name in company_names
+		if isinstance(name, str) and name.strip()
+	}
+	if normalized_company_names and not any(name in lower for name in normalized_company_names):
 		return None
 	if len(text.split()) < 12:
 		return None
@@ -300,8 +306,8 @@ def _invoke_groq_model(prompt: str, model_name: str) -> dict[str, Any]:
 	return _extract_json_obj(getattr(response, "content", ""))
 
 
-def _invoke_opening_line_groq_model(prompt: str, company_name: str, model_name: str) -> str | None:
-	return _normalize_opening_line_candidate(_invoke_groq_model(prompt, model_name), company_name)
+def _invoke_opening_line_groq_model(prompt: str, company_names: list[str], model_name: str) -> str | None:
+	return _normalize_opening_line_candidate(_invoke_groq_model(prompt, model_name), company_names)
 
 
 def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -318,6 +324,7 @@ def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> 
 		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,
 		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
 	}
+	company_names = [name for name in (company_name, prompt_data.get("official_name")) if isinstance(name, str) and name.strip()]
 	prompt = build_opening_line_prompt(company_name, prompt_data)
 	candidates: list[tuple[str, str]] = []
 	for model_name in dict.fromkeys([OPENING_LINE_PRIMARY_GROQ_MODEL, OPENING_LINE_SECONDARY_GROQ_MODEL]):
@@ -329,7 +336,7 @@ def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> 
 	try:
 		with concurrent.futures.ThreadPoolExecutor(max_workers=len(candidates)) as executor:
 			future_map = {
-				executor.submit(_invoke_opening_line_groq_model, prompt, company_name, model_name): provider
+				executor.submit(_invoke_opening_line_groq_model, prompt, company_names, model_name): provider
 				for provider, model_name in candidates
 			}
 			for future in concurrent.futures.as_completed(future_map):
@@ -358,7 +365,9 @@ def _invoke_gemini(prompt: str) -> dict[str, Any]:
 	llm = build_default_json_llm(temperature=0)
 	if llm is None:
 		return {}
-	response = llm.invoke(prompt)
+	response = invoke_llm_with_retry(llm, prompt, label="gemini synthesis")
+	if response is None:
+		return {}
 	return _extract_json_obj(getattr(response, "content", ""))
 
 
@@ -368,7 +377,9 @@ def _invoke_groq(prompt: str) -> dict[str, Any]:
 	llm = build_groq_llm(temperature=0)
 	if llm is None:
 		return {}
-	response = llm.invoke(prompt)
+	response = invoke_llm_with_retry(llm, prompt, label="groq synthesis")
+	if response is None:
+		return {}
 	return _extract_json_obj(getattr(response, "content", ""))
 
 

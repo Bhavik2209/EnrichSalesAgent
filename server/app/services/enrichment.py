@@ -7,13 +7,14 @@ from typing import Any, Callable
 
 from app.config import (
 	CUFINDER_API_KEY,
+	CUFINDER_API_KEYS,
 	GEMINI_API_KEY,
 	GROQ_API_KEY,
 	REQUEST_TIMEOUT,
 	SESSION,
 	TECHNOLOGY_CHECKER_API_KEY,
 )
-from app.llms import HAS_LLM, build_default_llm
+from app.llms import HAS_LLM, build_default_llm, invoke_llm_with_retry
 from app.prompts import ENRICHMENT_SYSTEM_PROMPT
 from app.services.hunter import get_company_profile
 
@@ -99,6 +100,34 @@ def _normalize_int_like(value: Any) -> str | None:
 		return None
 	digits = re.sub(r"\D", "", str(value))
 	return digits or None
+
+
+def _employee_count_display_from_count(value: Any) -> str | None:
+	count_text = _normalize_int_like(value)
+	if not count_text:
+		return None
+	try:
+		count = int(count_text)
+	except Exception:
+		return None
+
+	if count <= 10:
+		return "1-10"
+	if count <= 50:
+		return "11-50"
+	if count <= 200:
+		return "51-200"
+	if count <= 500:
+		return "201-500"
+	if count <= 1000:
+		return "501-1000"
+	if count <= 5000:
+		return "1001-5000"
+	return "5000+"
+
+
+def _can_fill_revenue(source: str) -> bool:
+	return source == "cufinder_car"
 
 
 def _normalize_text(value: Any) -> str | None:
@@ -189,9 +218,12 @@ def _normalize_employee_count_from_range(value: Any) -> str | None:
 
 def _map_technology_checker_response(data: dict[str, Any]) -> dict[str, Any]:
 	payload = data.get("data", {}) if isinstance(data.get("data"), dict) else {}
+	employee_count_value = payload.get("employees")
+	if _is_missing(employee_count_value):
+		employee_count_value = payload.get("associated_members")
 
 	mapped: dict[str, Any] = {
-		"employee_count": _normalize_employee_count_from_range(payload.get("employees")),
+		"employee_count": _normalize_employee_count_from_range(employee_count_value),
 		"founded_year": _normalize_text(payload.get("founded")),
 		"hq_city": _normalize_text(payload.get("city")),
 		"hq_country": _normalize_text(payload.get("country")),
@@ -203,16 +235,6 @@ def _map_technology_checker_response(data: dict[str, Any]) -> dict[str, Any]:
 
 	if _is_missing(mapped.get("parent_company")):
 		mapped["parent_company"] = _extract_parent_company_from_description(mapped.get("description"))
-
-	# Optional revenue extraction from narrative description when explicitly present.
-	if not _is_missing(mapped.get("description")):
-		revenue_match = re.search(
-			r"(?:turnover|revenue|sales)[^\n\.]{0,80}?([A-Z]{0,3}\s?[\$€£¥]?\s?\d[\d,\.]*\s?(?:billion|million|bn|mn|m|b)?)",
-			str(mapped["description"]),
-			flags=re.IGNORECASE,
-		)
-		if revenue_match:
-			mapped["revenue"] = _normalize_text(revenue_match.group(1))
 
 	return {k: v for k, v in mapped.items() if not _is_missing(v)}
 
@@ -237,18 +259,32 @@ def _map_cufinder_enc_response(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
-	response = SESSION.post(
-		endpoint,
-		headers={
-			"Content-Type": "application/x-www-form-urlencoded",
-			"x-api-key": CUFINDER_API_KEY,
-		},
-		data={"query": query},
-		timeout=REQUEST_TIMEOUT,
-	)
-	response.raise_for_status()
-	parsed = response.json()
-	return parsed if isinstance(parsed, dict) else {}
+	last_error: Exception | None = None
+	for index, api_key in enumerate(CUFINDER_API_KEYS, start=1):
+		try:
+			response = SESSION.post(
+				endpoint,
+				headers={
+					"Content-Type": "application/x-www-form-urlencoded",
+					"x-api-key": api_key,
+				},
+				data={"query": query},
+				timeout=REQUEST_TIMEOUT,
+			)
+			response.raise_for_status()
+			parsed = response.json()
+			return parsed if isinstance(parsed, dict) else {}
+		except Exception as exc:
+			last_error = exc
+			status_code = getattr(getattr(exc, "response", None), "status_code", None)
+			if status_code in {401, 403, 429}:
+				logger.warning("CUFinder key %s/%s exhausted or unauthorized for endpoint %s", index, len(CUFINDER_API_KEYS), endpoint)
+				continue
+			raise
+
+	if last_error is not None:
+		raise last_error
+	raise RuntimeError("No CUFinder API keys configured")
 
 
 @tool
@@ -286,7 +322,7 @@ def enrich_from_technology_checker(domain: str) -> dict:
 @tool
 def enrich_from_cufinder(company_name: str, domain: str) -> dict:
 	"""Fetches company enrichment from CUFinder /enc endpoint. Use only if Technology Checker did not return the needed fields."""
-	if not CUFINDER_API_KEY:
+	if not CUFINDER_API_KEYS:
 		return {}
 
 	endpoint = "https://api.cufinder.io/v2/enc"
@@ -306,7 +342,7 @@ def enrich_from_cufinder(company_name: str, domain: str) -> dict:
 @tool
 def get_cufinder_revenue(company_name: str, domain: str) -> str | None:
 	"""Gets annual revenue from CUFinder /car endpoint. Use this specifically for revenue if other sources did not return it."""
-	if not CUFINDER_API_KEY:
+	if not CUFINDER_API_KEYS:
 		return None
 
 	endpoint = "https://api.cufinder.io/v2/car"
@@ -327,7 +363,7 @@ def get_cufinder_revenue(company_name: str, domain: str) -> str | None:
 @tool
 def get_cufinder_employee_count(company_name: str, domain: str) -> str | None:
 	"""Gets employee headcount from CUFinder /cec endpoint broken down by country. Use for employee_count if other sources missed it."""
-	if not CUFINDER_API_KEY:
+	if not CUFINDER_API_KEYS:
 		return None
 
 	endpoint = "https://api.cufinder.io/v2/cec"
@@ -467,10 +503,9 @@ def _run_agent_tool_loop(
 	final_model_data: dict[str, Any] = {}
 
 	for _ in range(8):
-		try:
-			ai_message = llm.invoke(messages)
-		except Exception as exc:
-			logger.warning("LLM invocation failed during tool loop: %s", exc)
+		ai_message = invoke_llm_with_retry(llm, messages, label="enrichment agent")
+		if ai_message is None:
+			logger.warning("LLM invocation failed during tool loop")
 			break
 
 		tool_calls = getattr(ai_message, "tool_calls", None) or []
@@ -546,12 +581,30 @@ def _apply_dict_tool_result(
 		if field_name not in ALL_ENRICH_FIELDS or _is_missing(value):
 			continue
 
+		if source == "technology_checker" and field_name == "employee_count":
+			merged[field_name] = value
+			field_sources[field_name] = source
+			display_value = _employee_count_display_from_count(value)
+			if display_value:
+				merged["employee_count_display"] = display_value
+				field_sources["employee_count_display"] = source
+			continue
+
 		if source == "hunter_company_profile":
 			merged[field_name] = value
 			field_sources[field_name] = source
+			if field_name == "employee_count":
+				display_value = _employee_count_display_from_count(value)
+				if display_value:
+					merged["employee_count_display"] = display_value
+					field_sources["employee_count_display"] = source
 			continue
 
 		if field_name in REFRESH_FIELDS:
+			if field_name == "revenue" and not _can_fill_revenue(source):
+				continue
+			if field_name == "employee_count" and source == "cufinder_cec" and not _is_missing(merged.get(field_name)):
+				continue
 			if _is_missing(merged.get(field_name)):
 				merged[field_name] = value
 				field_sources[field_name] = source
@@ -576,12 +629,20 @@ def _apply_scalar_tool_result(
 		merged["revenue"] = result
 		field_sources["revenue"] = source
 	elif tool_name == "get_cufinder_employee_count":
+		if not _is_missing(merged.get("employee_count")):
+			return
 		merged["employee_count"] = result
 		field_sources["employee_count"] = source
+		display_value = _employee_count_display_from_count(result)
+		if display_value:
+			merged["employee_count_display"] = display_value
+			field_sources["employee_count_display"] = source
 
 
 def _soft_fill_from_model(model_data: dict[str, Any], merged: dict[str, Any], field_sources: dict[str, str]) -> None:
 	for field_name in ALL_ENRICH_FIELDS:
+		if field_name == "revenue":
+			continue
 		if not _is_missing(merged.get(field_name)):
 			continue
 		candidate = model_data.get(field_name)
@@ -597,6 +658,8 @@ def _apply_refresh_fallbacks_from_wikidata(
 	field_sources: dict[str, str],
 ) -> None:
 	for field_name in REFRESH_FIELDS:
+		if field_name == "revenue":
+			continue
 		if not _is_missing(merged.get(field_name)):
 			continue
 		wiki_value = wikidata_data.get(field_name)
@@ -626,6 +689,12 @@ def _merge_tool_events(
 			continue
 
 		_apply_scalar_tool_result(tool_name, source, result, merged, field_sources)
+
+	if not _is_missing(merged.get("employee_count")):
+		display_value = _employee_count_display_from_count(merged.get("employee_count"))
+		if display_value:
+			merged["employee_count_display"] = display_value
+			field_sources["employee_count_display"] = field_sources.get("employee_count", field_sources.get("employee_count_display", "derived_employee_count"))
 
 	_soft_fill_from_model(model_data, merged, field_sources)
 	_apply_refresh_fallbacks_from_wikidata(wikidata_data, merged, field_sources)

@@ -11,6 +11,15 @@ ROOT_DIR = SERVER_DIR.parent
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(SERVER_DIR / ".env")
 
+
+def _parse_key_list(value: str) -> list[str]:
+	keys: list[str] = []
+	for item in str(value or "").split(","):
+		key = item.strip()
+		if key and key not in keys:
+			keys.append(key)
+	return keys
+
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
@@ -22,8 +31,27 @@ CUFINDER_API_KEY = os.getenv("CUFINDER_API_KEY", "").strip()
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "").strip()
 TECHNOLOGY_CHECKER_API_KEY = os.getenv("TECHNOLOGY_CHECKER_API_KEY", "").strip()
 
-if not GEMINI_API_KEY and GOOGLE_API_KEY:
-	GEMINI_API_KEY = GOOGLE_API_KEY
+GEMINI_API_KEYS = _parse_key_list(os.getenv("GEMINI_API_KEYS", ""))
+if GEMINI_API_KEY:
+	GEMINI_API_KEYS = [GEMINI_API_KEY] + [key for key in GEMINI_API_KEYS if key != GEMINI_API_KEY]
+if GOOGLE_API_KEY:
+	if not GEMINI_API_KEY:
+		GEMINI_API_KEYS = [GOOGLE_API_KEY] + [key for key in GEMINI_API_KEYS if key != GOOGLE_API_KEY]
+	else:
+		GEMINI_API_KEYS = GEMINI_API_KEYS + [key for key in [GOOGLE_API_KEY] if key not in GEMINI_API_KEYS]
+
+CUFINDER_API_KEYS = _parse_key_list(os.getenv("CUFINDER_API_KEYS", ""))
+if CUFINDER_API_KEY:
+	CUFINDER_API_KEYS = [CUFINDER_API_KEY] + [key for key in CUFINDER_API_KEYS if key != CUFINDER_API_KEY]
+
+HUNTER_API_KEYS = _parse_key_list(os.getenv("HUNTER_API_KEYS", ""))
+if HUNTER_API_KEY:
+	HUNTER_API_KEYS = [HUNTER_API_KEY] + [key for key in HUNTER_API_KEYS if key != HUNTER_API_KEY]
+
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
+CUFINDER_API_KEY = CUFINDER_API_KEYS[0] if CUFINDER_API_KEYS else ""
+HUNTER_API_KEY = HUNTER_API_KEYS[0] if HUNTER_API_KEYS else ""
+
 if GEMINI_API_KEY:
 	os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 	os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY

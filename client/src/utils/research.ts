@@ -78,7 +78,7 @@ function buildSnapshot(data: Record<string, unknown>, fieldSources: Record<strin
     hqLocation,
     hqCountry,
     founded: asString(data.founded_year),
-    employeeRange: asString(data.employee_count_display) ?? asString(data.employee_count),
+    employeeRange: asString(data.employee_count) ?? asString(data.employee_count_display),
     revenue,
     revenueConfidence: mapRevenueConfidence(revenueSource, revenue),
     geographyStatus: mapGeographyStatus(asString(data.hq_geography_flag)),

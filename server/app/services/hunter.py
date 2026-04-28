@@ -5,7 +5,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from app.config import HUNTER_API_KEY, REQUEST_TIMEOUT, SESSION
+from app.config import HUNTER_API_KEYS, REQUEST_TIMEOUT, SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -211,20 +211,36 @@ def _normalize_city(profile: dict[str, Any]) -> str | None:
 
 
 def _response_data_from_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
-	response = SESSION.get(f"https://api.hunter.io/v2/{path}", params=params, timeout=REQUEST_TIMEOUT)
-	response.raise_for_status()
-	payload = response.json()
-	return payload.get("data", {}) if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else {}
+	last_error: Exception | None = None
+	for index, api_key in enumerate(HUNTER_API_KEYS, start=1):
+		request_params = dict(params)
+		request_params["api_key"] = api_key
+		try:
+			response = SESSION.get(f"https://api.hunter.io/v2/{path}", params=request_params, timeout=REQUEST_TIMEOUT)
+			response.raise_for_status()
+			payload = response.json()
+			return payload.get("data", {}) if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else {}
+		except Exception as exc:
+			last_error = exc
+			status_code = getattr(getattr(exc, "response", None), "status_code", None)
+			if status_code in {401, 403, 429}:
+				logger.warning("Hunter key %s/%s exhausted or unauthorized for endpoint %s", index, len(HUNTER_API_KEYS), path)
+				continue
+			raise
+
+	if last_error is not None:
+		raise last_error
+	return {}
 
 
 def get_company_profile(domain: str) -> dict[str, Any]:
-	if not HUNTER_API_KEY:
+	if not HUNTER_API_KEYS:
 		return {}
 
 	for candidate_domain in hunter_domain_candidates(domain):
 		for path in ("companies/find", "companies/enrich"):
 			try:
-				profile = _response_data_from_get(path, {"domain": candidate_domain, "api_key": HUNTER_API_KEY})
+				profile = _response_data_from_get(path, {"domain": candidate_domain})
 				if not profile:
 					continue
 
@@ -330,29 +346,34 @@ def score_person(person: dict[str, Any]) -> int:
 
 
 def get_people(domain: str) -> dict[str, Any]:
-	if not HUNTER_API_KEY:
+	if not HUNTER_API_KEYS:
 		return {}
 
 	for candidate_domain in hunter_domain_candidates(domain):
-		try:
-			data = _response_data_from_get(
-				"domain-search",
-				{
+		for index, api_key in enumerate(HUNTER_API_KEYS, start=1):
+			try:
+				data = _response_data_from_get(
+					"domain-search",
+					{
+						"domain": candidate_domain,
+						"seniority": "director,executive,vp,head,manager",
+						"api_key": api_key,
+					},
+				)
+				emails = data.get("emails", []) if isinstance(data.get("emails"), list) else []
+				people = [item for item in emails if isinstance(item, dict)]
+				return {
 					"domain": candidate_domain,
-					"seniority": "director,executive,vp,head,manager",
-					"api_key": HUNTER_API_KEY,
-				},
-			)
-			emails = data.get("emails", []) if isinstance(data.get("emails"), list) else []
-			people = [item for item in emails if isinstance(item, dict)]
-			return {
-				"domain": candidate_domain,
-				"email_pattern": _normalize_text(data.get("pattern")),
-				"people": people,
-			}
-		except Exception as exc:
-			logger.warning("Hunter people lookup failed for %s: %s", candidate_domain, exc)
-			continue
+					"email_pattern": _normalize_text(data.get("pattern")),
+					"people": people,
+				}
+			except Exception as exc:
+				status_code = getattr(getattr(exc, "response", None), "status_code", None)
+				if status_code in {401, 403, 429}:
+					logger.warning("Hunter key %s/%s exhausted or unauthorized for people endpoint", index, len(HUNTER_API_KEYS))
+					continue
+				logger.warning("Hunter people lookup failed for %s: %s", candidate_domain, exc)
+				continue
 	return {}
 
 

@@ -10,7 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.config import FIRECRAWL_API_KEY, FIRECRAWL_TIMEOUT, MAX_CONTENT_CHARS, REQUEST_TIMEOUT, SESSION
-from app.llms import HAS_LLM, build_default_llm
+from app.llms import HAS_LLM, build_default_llm, invoke_llm_with_retry
 from app.prompts import SCRAPER_PROFILE_PROMPT_TEMPLATE, SCRAPER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -284,7 +284,9 @@ def _invoke_profile_llm(text: str) -> dict[str, Any]:
         return {}
 
     try:
-        response = llm.invoke(prompt)
+        response = invoke_llm_with_retry(llm, prompt, label="scraper profile llm")
+        if response is None:
+            return {}
         parsed = _parse_json(getattr(response, "content", ""))
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
@@ -304,7 +306,9 @@ def build_scraper_agent() -> dict[str, Any] | None:
 def _run_agent(agent: dict[str, Any], urls: list[str]) -> tuple[dict, str]:
     msgs = [SystemMessage(content=SCRAPER_SYSTEM_PROMPT), HumanMessage(content=json.dumps({"candidate_urls": urls}, ensure_ascii=True))]
     for _ in range(10):
-        ai = agent["llm"].invoke(msgs)
+        ai = invoke_llm_with_retry(agent["llm"], msgs, label="scraper agent")
+        if ai is None:
+            return ({}, "failed")
         calls = getattr(ai, "tool_calls", None) or []
         if not calls:
             out = _parse_json(getattr(ai, "content", ""))

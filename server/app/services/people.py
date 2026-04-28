@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any, Callable
 
-from app.llms import HAS_LLM, build_default_json_llm
+from app.llms import HAS_LLM, build_default_json_llm, invoke_llm_with_retry
 from app.prompts import build_people_title_prompt
 from app.services.hunter import extract_domain, get_people, normalize_employee_count, pick_best_contact
 
@@ -114,7 +114,9 @@ def _invoke_title_llm(prompt: str) -> dict[str, Any]:
 		llm = build_default_json_llm(temperature=0)
 		if llm is None:
 			return {}
-		response = llm.invoke(prompt)
+		response = invoke_llm_with_retry(llm, prompt, label="people title llm")
+		if response is None:
+			return {}
 		return _extract_json_dict(getattr(response, "content", ""))
 	except Exception as exc:
 		logger.warning("Title suggestion LLM failed: %s", exc)
