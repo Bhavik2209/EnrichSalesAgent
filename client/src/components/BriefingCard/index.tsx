@@ -25,7 +25,7 @@ export function BriefingCard({ b }: { b: BC }) {
   return (
     <div className="max-w-[900px] mx-auto px-4 sm:px-6 pb-28 pt-6 sm:pt-8">
       <CompanyIdentityBar b={b} />
-      {b.companySummaryShort && <CompanySummary companyName={b.companyName} text={b.companySummaryShort} />}
+      {b.companySummaryShort && <CompanySummary companyName={b.companyName} text={b.companySummaryShort} tags={b.snapshot.tags} />}
       {b.openingLine && <OpeningLine text={b.openingLine} />}
       {/*
         4-card layout:

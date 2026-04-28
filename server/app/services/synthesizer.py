@@ -274,18 +274,67 @@ def _build_company_summary(company_name: str, data: dict[str, Any]) -> str | Non
 	hq_country = _clean_for_sentence(data.get("hq_country"), max_len=60)
 	location = ", ".join(part for part in (hq_city, hq_country) if part)
 	industry = _clean_for_sentence(data.get("industry"), max_len=80)
+	parent_company = _clean_for_sentence(data.get("parent_company"), max_len=90)
+	aftermarket_reason = _clean_for_sentence(data.get("aftermarket_reason"), max_len=120)
+	aftermarket_footprint = data.get("aftermarket_footprint")
+	tags = [
+		_clean_for_sentence(tag, max_len=32)
+		for tag in data.get("company_tags", [])
+		if isinstance(tag, str) and _clean_for_sentence(tag, max_len=32)
+	]
+	tag_phrase = ""
+	if tags:
+		selected_tags = tags[:4]
+		if len(selected_tags) == 1:
+			tag_phrase = selected_tags[0]
+		elif len(selected_tags) == 2:
+			tag_phrase = f"{selected_tags[0]} and {selected_tags[1]}"
+		else:
+			tag_phrase = f"{', '.join(selected_tags[:-1])}, and {selected_tags[-1]}"
 
-	if what_they_make and location:
-		return f"{official_name} is based in {location}. It makes {what_they_make}."
-	if what_they_make and industry:
-		return f"{official_name} operates in {industry}. It makes {what_they_make}."
+	lines: list[str] = []
+	lines.append(official_name)
+	if description and not _is_weak_description(description):
+		lines.append(description)
+	elif industry:
+		lines.append(f"Industry: {industry}")
 	if what_they_make:
-		return f"{official_name} makes {what_they_make}."
-	if description and location:
-		return f"{official_name} is based in {location}. {description}."
-	if description:
-		return f"{official_name} {description[0].lower() + description[1:] if len(description) > 1 else description.lower()}."
-	return None
+		lines.append(f"What they make: {what_they_make}")
+	if tag_phrase:
+		lines.append(f"Key areas: {tag_phrase}")
+	if location:
+		lines.append(f"HQ: {location}")
+	elif hq_country:
+		lines.append(f"HQ country: {hq_country}")
+	if parent_company:
+		lines.append(f"Parent company: {parent_company}")
+	if aftermarket_footprint is True:
+		lines.append(f"Aftermarket: {aftermarket_reason or 'positive service, support, or portal signals detected'}")
+	elif aftermarket_footprint is False:
+		lines.append(f"Aftermarket: {aftermarket_reason or 'no strong aftermarket footprint confirmed yet'}")
+	elif aftermarket_reason:
+		lines.append(f"Aftermarket: {aftermarket_reason}")
+
+	unique_lines: list[str] = []
+	for line in lines:
+		cleaned = re.sub(r"\s+", " ", str(line or "")).strip()
+		if cleaned and cleaned not in unique_lines:
+			unique_lines.append(cleaned)
+
+	if len(unique_lines) < 5:
+		fallback_candidates = [
+			f"Region context: {data.get('hq_geography_region')}" if _clean_for_sentence(data.get("hq_geography_region"), max_len=40) else None,
+			"Commercial context: service and aftermarket relevance appears material" if aftermarket_footprint is True else None,
+			"Commercial context: aftermarket relevance is still uncertain" if aftermarket_footprint is None else None,
+			f"Website: {_clean_for_sentence(data.get('website'), max_len=80)}" if _clean_for_sentence(data.get("website"), max_len=80) else None,
+		]
+		for candidate in fallback_candidates:
+			if candidate and candidate not in unique_lines:
+				unique_lines.append(candidate)
+			if len(unique_lines) >= 5:
+				break
+
+	return "\n".join(unique_lines[:6]) if unique_lines else None
 
 
 def _normalize_opening_line_candidate(raw: Any, company_names: list[str]) -> str | None:
@@ -321,15 +370,16 @@ def _normalize_opening_line_candidate(raw: Any, company_names: list[str]) -> str
 def _normalize_company_summary_candidate(raw: Any, company_names: list[str]) -> str | None:
 	if isinstance(raw, dict):
 		raw = raw.get("company_summary_short")
-	text = re.sub(r"\s+", " ", str(raw or "")).strip().strip('"').strip("'")
+	text = str(raw or "").strip().strip('"').strip("'")
 	if not text:
 		return None
-	text = re.sub(r"(?<![.!?])\s*$", ".", text)
-	sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
-	if not sentences:
+	text = text.replace("\\n", "\n")
+	lines = [re.sub(r"\s+", " ", part).strip(" -\t") for part in text.splitlines() if part.strip()]
+	if not lines:
 		return None
-	if len(sentences) > 2:
-		text = " ".join(sentences[:2]).strip()
+	if len(lines) < 5 or len(lines) > 6:
+		return None
+	text = "\n".join(lines)
 	summary_lower = text.lower()
 	rejected_fragments = (
 		"united states manufacturing company",
@@ -347,7 +397,7 @@ def _normalize_company_summary_candidate(raw: Any, company_names: list[str]) -> 
 	if normalized_company_names and not any(name in summary_lower for name in normalized_company_names):
 		return None
 	word_count = len(text.split())
-	if word_count < 10 or word_count > 60:
+	if word_count < 20 or word_count > 120:
 		return None
 	return text
 
@@ -379,6 +429,11 @@ def generate_messages_with_llms(company_name: str, data: dict[str, Any]) -> tupl
 		"description": _clean_for_sentence(data.get("description"), max_len=180) or None,
 		"industry": _clean_for_sentence(data.get("industry"), max_len=120) or None,
 		"what_they_make": _clean_for_sentence(data.get("what_they_make"), max_len=120) or None,
+		"company_tags": [
+			_clean_for_sentence(tag, max_len=40)
+			for tag in data.get("company_tags", [])
+			if isinstance(tag, str) and _clean_for_sentence(tag, max_len=40)
+		][:6] or None,
 		"hq_country": _clean_for_sentence(data.get("hq_country"), max_len=80) or None,
 		"hq_city": _clean_for_sentence(data.get("hq_city"), max_len=80) or None,
 		"parent_company": _clean_for_sentence(data.get("parent_company"), max_len=120) or None,

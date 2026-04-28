@@ -5,9 +5,10 @@ import { copyText } from '@/utils/clipboard';
 interface Props {
   companyName: string;
   text: string;
+  tags: string[];
 }
 
-export function CompanySummary({ companyName, text }: Props) {
+export function CompanySummary({ companyName, text, tags }: Props) {
   const [copied, setCopied] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
@@ -51,9 +52,21 @@ export function CompanySummary({ companyName, text }: Props) {
       style={{ background: 'linear-gradient(135deg, hsl(var(--surface)) 0%, hsl(var(--primary-tint)) 100%)', boxShadow: 'var(--shadow-card)' }}
     >
       <div className="eyebrow mb-3" style={{ color: 'hsl(var(--primary))' }}>QUICK COMPANY SUMMARY</div>
-      <p className="text-[15px] sm:text-[18px] text-primary-ink leading-[1.65]">
+      <p className="whitespace-pre-line text-[15px] sm:text-[18px] text-primary-ink leading-[1.65]">
         {text}
       </p>
+      {tags.length > 0 && (
+        <div className="mt-4">
+          <div className="text-[10px] sm:text-[11px] font-semibold tracking-[0.06em] text-muted-ink mb-2">KEY TAGS</div>
+          <div className="flex flex-wrap gap-2">
+            {tags.slice(0, 6).map((tag) => (
+              <span key={tag} className="inline-flex items-center rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] text-secondary-ink">
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="mt-5 flex flex-wrap gap-2">
         <button
           onClick={handleSpeak}

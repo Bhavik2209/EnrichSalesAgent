@@ -7,6 +7,7 @@ def build_message_prompt(company_name: str, data: dict) -> str:
 		"description": data.get("description"),
 		"industry": data.get("industry"),
 		"what_they_make": data.get("what_they_make"),
+		"company_tags": data.get("company_tags") or [],
 		"hq_country": data.get("hq_country"),
 		"hq_city": data.get("hq_city"),
 		"parent_company": data.get("parent_company"),
@@ -15,11 +16,14 @@ def build_message_prompt(company_name: str, data: dict) -> str:
 	}
 	return (
 		"You write concise company messaging for sales research.\n"
-		"Using only the structured company context below, write both a short company summary and one personalized opening line.\n"
+		"Using only the structured company context below, write both a structured company summary and one personalized opening line.\n"
 		"Return JSON only with exactly two keys: company_summary_short and personalized_opening_line.\n"
 		"Requirements:\n"
-		"- company_summary_short: 5-6 sentences, about 28 to 55 words total, factual, easy to read aloud, and not too long.\n"
-		"- company_summary_short should explain what the company does using the strongest concrete details available such as what it makes, industry, geography, parent company, or aftermarket footprint.\n"
+		"- company_summary_short: exactly 5 or 6 short lines inside one JSON string, with each line separated by a newline character.\n"
+		"- Each line should be concise, factual, and easy to read aloud.\n"
+		"- Use the available company facts across the lines: what the company does, geography, industry, what it makes, company_tags, aftermarket footprint, and any useful parent-company or positioning context.\n"
+		"- If company_tags are useful, include 2 to 4 of them naturally in one line.\n"
+		"- Do not use markdown bullets, numbering, labels like 'Line 1', or a long paragraph.\n"
 		"- personalized_opening_line: 1 sentence, 22 to 38 words, natural and specific.\n"
 		"- personalized_opening_line should use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
 		"- Do not repeat awkward Wikidata labels like 'United States manufacturing company' or generic phrases like 'is focused on'.\n"
