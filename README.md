@@ -42,7 +42,7 @@ The backend README also references the same file, so you only need to keep one c
 - Generates a personalized opening line.
 - Returns field-level provenance and source URLs.
 - Streams progress events to the frontend while the backend is running.
-- Caches final responses in SQLite to speed up repeated lookups.
+- Uses a two-stage SQLite cache to speed up repeated lookups and alias lookups that resolve to the same domain.
 
 ## End-to-End Flow
 
@@ -57,7 +57,7 @@ The backend README also references the same file, so you only need to keep one c
 9. People targeting finds a real person or the best fallback title.
 10. Opening-line generation produces a personalized outreach opener.
 11. The final response is returned with `data`, `field_sources`, `sources`, and `notes`.
-12. The completed response is cached in SQLite for future requests.
+12. The completed response is cached by both input alias and resolved domain for future requests.
 
 ## Backend Architecture
 
@@ -85,7 +85,7 @@ Responsibilities:
 - emit progress events
 - merge multi-source data into one normalized response
 - preserve source attribution
-- store and retrieve cached results
+- store and retrieve both input-key and domain-key cached results
 
 ### Service layers
 
@@ -143,6 +143,25 @@ Typical stream event types:
 - `progress`
 - `result`
 - `error`
+
+## Cache Strategy
+
+The backend now uses a two-stage cache:
+
+1. Input cache
+   Keyed by normalized `company_name + extra_context + requested_fields`
+2. Domain cache
+   Keyed by normalized `resolved_domain + extra_context + requested_fields`
+
+Flow:
+
+1. Check the input cache before discovery.
+2. If that misses, run discovery and resolve the domain.
+3. Check the domain cache after discovery.
+4. If the domain cache hits, reuse that result and backfill the input cache alias.
+5. If both miss, run live research and store the final result in both caches.
+
+This helps with cases like `Bobst` vs `Bobst Group` when both names resolve to the same website.
 
 ## Response Shape
 

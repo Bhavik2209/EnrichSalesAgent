@@ -9,7 +9,12 @@ import time
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from app.cache import get_cached_research_response, set_cached_research_response
+from app.cache import (
+	get_cached_research_response,
+	get_cached_research_response_by_domain,
+	set_cached_research_response,
+	set_cached_research_response_by_domain,
+)
 from app.config import GROQ_API_KEY
 from app.llms import (
 	HAS_LLM,
@@ -862,6 +867,30 @@ async def research_company(
 	resolved_domain, wikidata = await _step1_discovery(company_name, extra_context, notes, sources, data, field_sources, progress_cb)
 	_log_timing(company_name, "step1_discovery", stage_started_at)
 
+	normalized_resolved_domain = _normalize_domain_url(resolved_domain)
+	if normalized_resolved_domain:
+		_emit_progress(progress_cb, "cache.domain_lookup", "info", f"Checking domain cache for {normalized_resolved_domain}")
+		domain_cached_payload = await asyncio.to_thread(
+			get_cached_research_response_by_domain,
+			normalized_resolved_domain,
+			extra_context,
+			requested_fields,
+		)
+		if isinstance(domain_cached_payload, dict):
+			domain_cached_payload["company_name"] = company_name
+			domain_cached_payload["resolved_domain"] = normalized_resolved_domain
+			await asyncio.to_thread(
+				set_cached_research_response,
+				company_name,
+				extra_context,
+				requested_fields,
+				domain_cached_payload,
+			)
+			_emit_progress(progress_cb, "cache.domain_lookup", "cache_hit", "Domain cache hit. Returning cached research response")
+			_log_timing(company_name, "total_research_domain_cache_hit", total_started_at)
+			return ResearchResponse(**domain_cached_payload)
+		_emit_progress(progress_cb, "cache.domain_lookup", "completed", "No domain cache hit. Continuing live research")
+
 	stage_started_at = time.perf_counter()
 	enrichment_data, enrich_sources, scraper_dict, about_text = await _step2_parallel_services(
 		company_name,
@@ -933,4 +962,12 @@ async def research_company(
 		requested_fields,
 		response.model_dump(),
 	)
+	if normalized_resolved_domain:
+		await asyncio.to_thread(
+			set_cached_research_response_by_domain,
+			normalized_resolved_domain,
+			extra_context,
+			requested_fields,
+			response.model_dump(),
+		)
 	return response
