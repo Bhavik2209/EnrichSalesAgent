@@ -32,7 +32,7 @@ Place these images in `docs/images/` so they render automatically in GitHub:
 
 The backend pipeline diagram should also live in `docs/images/`:
 
-![Backend pipeline flow](docs/images/backend-pipeline.png)
+![Backend pipeline flow](docs/images/flow.png)
 
 The backend README also references the same file, so you only need to keep one copy in the repo.
 
@@ -270,7 +270,7 @@ docs/images/live-logs.png
 docs/images/img1.png
 docs/images/img2.png
 docs/images/img3.png
-docs/images/backend-pipeline.png
+docs/images/flow.png
 ```
 
 Using one shared `docs/images/` folder is the safest option for GitHub rendering because:

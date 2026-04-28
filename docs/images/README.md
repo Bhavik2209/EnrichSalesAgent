@@ -7,7 +7,7 @@ front-page.png
 live-logs.png
 research-card-1.png
 research-card-2.png
-backend-pipeline.png
+flow.png
 ```
 
 These names are already referenced by:

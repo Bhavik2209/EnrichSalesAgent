@@ -9,12 +9,12 @@ This server accepts a company name, discovers the official domain, enriches comp
 Store the pipeline image here:
 
 ```text
-docs/images/backend-pipeline.png
+docs/images/flow.png
 ```
 
 GitHub-rendered image:
 
-![Backend pipeline flow](../docs/images/backend-pipeline.png)
+![Backend pipeline flow](../docs/images/flow.png)
 
 ## Folder Structure
 
