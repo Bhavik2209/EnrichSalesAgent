@@ -18,7 +18,7 @@ def build_message_prompt(company_name: str, data: dict) -> str:
 		"Using only the structured company context below, write both a short company summary and one personalized opening line.\n"
 		"Return JSON only with exactly two keys: company_summary_short and personalized_opening_line.\n"
 		"Requirements:\n"
-		"- company_summary_short: 2 sentences, about 28 to 55 words total, factual, easy to read aloud, and not too long.\n"
+		"- company_summary_short: 5-6 sentences, about 28 to 55 words total, factual, easy to read aloud, and not too long.\n"
 		"- company_summary_short should explain what the company does using the strongest concrete details available such as what it makes, industry, geography, parent company, or aftermarket footprint.\n"
 		"- personalized_opening_line: 1 sentence, 22 to 38 words, natural and specific.\n"
 		"- personalized_opening_line should use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
