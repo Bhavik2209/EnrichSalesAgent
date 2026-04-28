@@ -44,6 +44,11 @@ The backend README also references the same file, so you only need to keep one c
 - Streams progress events to the frontend while the backend is running.
 - Uses a two-stage SQLite cache to speed up repeated lookups and alias lookups that resolve to the same domain.
 
+## Live App
+
+Frontend:
+`https://enrichsalesagent.vercel.app/`
+
 ## End-to-End Flow
 
 1. The user submits `company_name` and optional `extra_context`.
