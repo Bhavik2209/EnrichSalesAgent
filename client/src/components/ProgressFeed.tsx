@@ -13,6 +13,7 @@ function stageLabel(stage?: string): string {
   if (value.startsWith('aftermarket')) return 'Aftermarket';
   if (value.startsWith('people')) return 'People';
   if (value.startsWith('what_they_make')) return 'What They Make';
+  if (value.startsWith('company_summary')) return 'Audio Summary';
   if (value.startsWith('opening_line')) return 'Opening Line';
   if (value.startsWith('research.complete')) return 'Complete';
   return 'Research';
@@ -25,7 +26,7 @@ function stageIcon(stage?: string) {
   if (value.startsWith('hunter')) return Globe;
   if (value.startsWith('technology_checker') || value.startsWith('cufinder')) return Wrench;
   if (value.startsWith('people')) return User;
-  if (value.startsWith('opening_line') || value.startsWith('research.complete')) return Sparkles;
+  if (value.startsWith('company_summary') || value.startsWith('opening_line') || value.startsWith('research.complete')) return Sparkles;
   return Globe;
 }
 

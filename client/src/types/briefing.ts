@@ -49,6 +49,7 @@ export interface RecentSignal {
 
 export interface BriefingCard {
   companyName: string;
+  companySummaryShort: string | null;
   snapshot: CompanySnapshot;
   productLine: string | null;
   productLineSources: string[];

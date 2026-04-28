@@ -33,6 +33,11 @@ export function formatBriefingForExport(b: BriefingCard): string {
     lines.push(b.openingLine);
     lines.push('');
   }
+  if (b.companySummaryShort) {
+    lines.push('## Quick Company Summary');
+    lines.push(b.companySummaryShort);
+    lines.push('');
+  }
   if (b.productLine) {
     lines.push('## What They Make');
     lines.push(b.productLine);

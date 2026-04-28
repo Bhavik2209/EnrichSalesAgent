@@ -1,7 +1,7 @@
 import json
 
 
-def build_opening_line_prompt(company_name: str, data: dict) -> str:
+def build_message_prompt(company_name: str, data: dict) -> str:
 	context = {
 		"official_name": data.get("official_name"),
 		"description": data.get("description"),
@@ -14,20 +14,25 @@ def build_opening_line_prompt(company_name: str, data: dict) -> str:
 		"recent_news_titles": data.get("recent_news_titles") or [],
 	}
 	return (
-		"You write short B2B outreach opening lines for sales research.\n"
-		"Using only the structured company context below, write one personalized opening line.\n"
-		"Return JSON only with exactly one key: personalized_opening_line.\n"
+		"You write concise company messaging for sales research.\n"
+		"Using only the structured company context below, write both a short company summary and one personalized opening line.\n"
+		"Return JSON only with exactly two keys: company_summary_short and personalized_opening_line.\n"
 		"Requirements:\n"
-		"- One sentence only.\n"
-		"- 22 to 38 words.\n"
-		"- Sound natural and specific, not robotic.\n"
-		"- Use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
+		"- company_summary_short: 2 sentences, about 28 to 55 words total, factual, easy to read aloud, and not too long.\n"
+		"- company_summary_short should explain what the company does using the strongest concrete details available such as what it makes, industry, geography, parent company, or aftermarket footprint.\n"
+		"- personalized_opening_line: 1 sentence, 22 to 38 words, natural and specific.\n"
+		"- personalized_opening_line should use the strongest concrete signal available such as what the company makes, industry, parent company, or recent news.\n"
 		"- Do not repeat awkward Wikidata labels like 'United States manufacturing company' or generic phrases like 'is focused on'.\n"
-		"- End by connecting to service, aftermarket, parts, support, or digital transformation.\n"
+		"- End the opening line by connecting to service, aftermarket, parts, support, or digital transformation.\n"
+		"- Keep both outputs grounded in the provided context and do not invent facts.\n"
 		"- Do not invent facts.\n\n"
 		f"Company: {company_name}\n"
 		f"Context: {json.dumps(context, ensure_ascii=True)}"
 	)
+
+
+def build_opening_line_prompt(company_name: str, data: dict) -> str:
+	return build_message_prompt(company_name, data)
 
 
 def build_synthesis_prompt(company_name: str, missing_fields: list[str], combined_text: str) -> str:

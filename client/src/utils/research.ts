@@ -178,6 +178,7 @@ export function parseResearchPayload(payload: ResearchResponse): BriefingCard {
 
   return {
     companyName,
+    companySummaryShort: asString(data.company_summary_short),
     snapshot,
     productLine:
       asString(data.what_they_make) ??

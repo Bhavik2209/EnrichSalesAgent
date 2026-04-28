@@ -25,7 +25,7 @@ from app.llms import (
 	invoke_llm_with_retry,
 )
 from app.models import ResearchResponse
-from app.prompts import build_opening_line_prompt, build_synthesis_prompt
+from app.prompts import build_message_prompt, build_synthesis_prompt
 from app.services.aftermarket import detect_aftermarket
 from app.services.discovery import parse_wikidata_company, resolve_official_domain
 from app.services.discovery import _is_suspicious_official_domain as is_suspicious_official_domain
@@ -266,6 +266,28 @@ def _build_opening_line(company_name: str, data: dict[str, Any]) -> str | None:
 	return None
 
 
+def _build_company_summary(company_name: str, data: dict[str, Any]) -> str | None:
+	official_name = _clean_for_sentence(data.get("official_name"), max_len=90) or company_name
+	what_they_make = _clean_for_sentence(data.get("what_they_make"), max_len=110)
+	description = _clean_for_sentence(data.get("description"), max_len=140)
+	hq_city = _clean_for_sentence(data.get("hq_city"), max_len=60)
+	hq_country = _clean_for_sentence(data.get("hq_country"), max_len=60)
+	location = ", ".join(part for part in (hq_city, hq_country) if part)
+	industry = _clean_for_sentence(data.get("industry"), max_len=80)
+
+	if what_they_make and location:
+		return f"{official_name} is based in {location}. It makes {what_they_make}."
+	if what_they_make and industry:
+		return f"{official_name} operates in {industry}. It makes {what_they_make}."
+	if what_they_make:
+		return f"{official_name} makes {what_they_make}."
+	if description and location:
+		return f"{official_name} is based in {location}. {description}."
+	if description:
+		return f"{official_name} {description[0].lower() + description[1:] if len(description) > 1 else description.lower()}."
+	return None
+
+
 def _normalize_opening_line_candidate(raw: Any, company_names: list[str]) -> str | None:
 	if isinstance(raw, dict):
 		raw = raw.get("personalized_opening_line")
@@ -296,6 +318,40 @@ def _normalize_opening_line_candidate(raw: Any, company_names: list[str]) -> str
 	return text
 
 
+def _normalize_company_summary_candidate(raw: Any, company_names: list[str]) -> str | None:
+	if isinstance(raw, dict):
+		raw = raw.get("company_summary_short")
+	text = re.sub(r"\s+", " ", str(raw or "")).strip().strip('"').strip("'")
+	if not text:
+		return None
+	text = re.sub(r"(?<![.!?])\s*$", ".", text)
+	sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+	if not sentences:
+		return None
+	if len(sentences) > 2:
+		text = " ".join(sentences[:2]).strip()
+	summary_lower = text.lower()
+	rejected_fragments = (
+		"united states manufacturing company",
+		"is focused on",
+		"leading company",
+		"great company",
+	)
+	if any(fragment in summary_lower for fragment in rejected_fragments):
+		return None
+	normalized_company_names = {
+		re.sub(r"\s+", " ", str(name or "")).strip().lower()
+		for name in company_names
+		if isinstance(name, str) and name.strip()
+	}
+	if normalized_company_names and not any(name in summary_lower for name in normalized_company_names):
+		return None
+	word_count = len(text.split())
+	if word_count < 10 or word_count > 60:
+		return None
+	return text
+
+
 def _invoke_groq_model(prompt: str, model_name: str) -> dict[str, Any]:
 	if not (HAS_LLM and GROQ_API_KEY):
 		return {}
@@ -306,13 +362,17 @@ def _invoke_groq_model(prompt: str, model_name: str) -> dict[str, Any]:
 	return _extract_json_obj(getattr(response, "content", ""))
 
 
-def _invoke_opening_line_groq_model(prompt: str, company_names: list[str], model_name: str) -> str | None:
-	return _normalize_opening_line_candidate(_invoke_groq_model(prompt, model_name), company_names)
+def _invoke_message_groq_model(prompt: str, company_names: list[str], model_name: str) -> dict[str, str | None]:
+	raw = _invoke_groq_model(prompt, model_name)
+	return {
+		"company_summary_short": _normalize_company_summary_candidate(raw, company_names),
+		"personalized_opening_line": _normalize_opening_line_candidate(raw, company_names),
+	}
 
 
-def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
+def generate_messages_with_llms(company_name: str, data: dict[str, Any]) -> tuple[dict[str, str | None], str | None]:
 	if not HAS_LLM:
-		return (None, None)
+		return ({}, None)
 
 	prompt_data = {
 		"official_name": _clean_for_sentence(data.get("official_name"), max_len=120) or None,
@@ -325,33 +385,33 @@ def generate_opening_line_with_llms(company_name: str, data: dict[str, Any]) -> 
 		"aftermarket_footprint": _clean_for_sentence(data.get("aftermarket_footprint"), max_len=120) or None,
 	}
 	company_names = [name for name in (company_name, prompt_data.get("official_name")) if isinstance(name, str) and name.strip()]
-	prompt = build_opening_line_prompt(company_name, prompt_data)
+	prompt = build_message_prompt(company_name, prompt_data)
 	candidates: list[tuple[str, str]] = []
 	for model_name in dict.fromkeys([OPENING_LINE_PRIMARY_GROQ_MODEL, OPENING_LINE_SECONDARY_GROQ_MODEL]):
 		if model_name:
 			candidates.append((f"groq:{model_name}", model_name))
 	if not candidates:
-		return (None, None)
+		return ({}, None)
 
 	try:
 		with concurrent.futures.ThreadPoolExecutor(max_workers=len(candidates)) as executor:
 			future_map = {
-				executor.submit(_invoke_opening_line_groq_model, prompt, company_names, model_name): provider
+				executor.submit(_invoke_message_groq_model, prompt, company_names, model_name): provider
 				for provider, model_name in candidates
 			}
 			for future in concurrent.futures.as_completed(future_map):
 				provider = future_map[future]
 				try:
-					line = future.result()
+					message_payload = future.result()
 				except Exception as exc:
-					logger.warning("Opening line generation failed with %s for %s: %s", provider, company_name, exc)
+					logger.warning("Message generation failed with %s for %s: %s", provider, company_name, exc)
 					continue
-				if line:
-					return (line, provider)
+				if message_payload.get("company_summary_short") or message_payload.get("personalized_opening_line"):
+					return (message_payload, provider)
 	except Exception as exc:
-		logger.warning("Parallel opening line generation failed for %s: %s", company_name, exc)
+		logger.warning("Parallel message generation failed for %s: %s", company_name, exc)
 
-	return (None, None)
+	return ({}, None)
 
 
 def _run_sync_or_async_in_thread(func: Any, *args: Any) -> Any:
@@ -761,23 +821,37 @@ async def _step3_sequential(
 					_emit_progress(progress_cb, "what_they_make", "completed", "Extracted what the company makes from profile text")
 			except Exception:
 				pass
-		if _is_empty(data.get("personalized_opening_line")):
-			llm_opening_line = None
-			llm_provider = None
+		llm_messages: dict[str, str | None] = {}
+		llm_provider: str | None = None
+		needs_company_summary = _is_empty(data.get("company_summary_short"))
+		needs_opening_line = _is_empty(data.get("personalized_opening_line"))
+		if needs_company_summary or needs_opening_line:
 			try:
-				_emit_progress(progress_cb, "opening_line", "info", "Generating a personalized opening line")
-				llm_opening_line, llm_provider = await asyncio.to_thread(
-					generate_opening_line_with_llms,
+				if needs_company_summary:
+					_emit_progress(progress_cb, "company_summary", "info", "Generating a short company summary for quick playback")
+				if needs_opening_line:
+					_emit_progress(progress_cb, "opening_line", "info", "Generating a personalized opening line")
+				llm_messages, llm_provider = await asyncio.to_thread(
+					generate_messages_with_llms,
 					company_name,
 					data,
 				)
 			except Exception:
-				llm_opening_line, llm_provider = (None, None)
-			opening_line = llm_opening_line or _build_opening_line(company_name, data)
+				llm_messages, llm_provider = ({}, None)
+		if needs_company_summary:
+			company_summary = llm_messages.get("company_summary_short") or _build_company_summary(company_name, data)
+			if company_summary:
+				data["company_summary_short"] = company_summary
+				field_sources["company_summary_short"] = (
+					f"company_summary_llm_{llm_provider}" if llm_messages.get("company_summary_short") and llm_provider else "company_summary_generator"
+				)
+				_emit_progress(progress_cb, "company_summary", "completed", "Short company summary ready")
+		if needs_opening_line:
+			opening_line = llm_messages.get("personalized_opening_line") or _build_opening_line(company_name, data)
 			if opening_line:
 				data["personalized_opening_line"] = opening_line
 				field_sources["personalized_opening_line"] = (
-					f"opening_line_llm_{llm_provider}" if llm_opening_line and llm_provider else "opening_line_generator"
+					f"opening_line_llm_{llm_provider}" if llm_messages.get("personalized_opening_line") and llm_provider else "opening_line_generator"
 				)
 				_emit_progress(progress_cb, "opening_line", "completed", "Opening line ready")
 	except Exception:

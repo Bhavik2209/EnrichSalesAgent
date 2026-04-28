@@ -70,6 +70,8 @@ const MOCK_KRONES: BriefingCard = {
     'https://www.krones.com/en/press/',
     'https://www.krones.com/en/investor-relations/',
   ],
+  companySummaryShort:
+    'Krones is a Germany-based manufacturer of filling, packaging, and process technology for beverage and food producers. It also has a strong digital service and aftermarket layer through its Syskron platform.',
   generatedAt: new Date().toISOString(),
 };
 
@@ -119,7 +121,7 @@ function getApiBaseUrl(): string {
 function mapStageToType(stage: string | undefined): ProgressStepType {
   const value = (stage ?? '').toLowerCase();
   if (value.includes('people')) return 'person';
-  if (value.includes('opening_line') || value.includes('research.complete')) return 'synthesis';
+  if (value.includes('company_summary') || value.includes('opening_line') || value.includes('research.complete')) return 'synthesis';
   if (value.includes('news')) return 'news';
   if (value.includes('discovery') || value.includes('cache')) return 'search';
   return 'fetch';

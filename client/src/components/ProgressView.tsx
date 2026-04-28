@@ -23,7 +23,7 @@ function normalizeStage(stage?: string): string {
   if (value.startsWith('scraper') || value.startsWith('what_they_make')) return 'scrape';
   if (value.startsWith('aftermarket')) return 'aftermarket';
   if (value.startsWith('people')) return 'people';
-  if (value.startsWith('opening_line')) return 'opening_line';
+  if (value.startsWith('company_summary') || value.startsWith('opening_line')) return 'messaging';
   if (value.startsWith('research.complete')) return 'complete';
   return 'research';
 }
@@ -35,7 +35,7 @@ const STAGE_CARDS = [
   { key: 'scrape', label: 'Profile Scrape' },
   { key: 'aftermarket', label: 'Aftermarket' },
   { key: 'people', label: 'People' },
-  { key: 'opening_line', label: 'Opening Line' },
+  { key: 'messaging', label: 'Messaging' },
 ];
 
 export function ProgressView({ companyName, steps }: Props) {
