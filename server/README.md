@@ -291,16 +291,24 @@ Folder:
 Responsibilities:
 - Caches the final `ResearchResponse` in SQLite
 - Avoids repeating the full research pipeline for the same company input
+- Reuses results across different company-name aliases that resolve to the same domain
 - Uses TTL-based expiry
 
 Current behavior:
-- Cache key includes normalized:
-  - `company_name`
-  - `extra_context`
-  - `requested_fields`
-- Cache is checked at the beginning of `research_company(...)`
-- On hit, the final response is returned immediately
-- On miss, the pipeline runs normally and the final response is stored
+- The backend uses two cache keys:
+  - input cache key with normalized:
+    - `company_name`
+    - `extra_context`
+    - `requested_fields`
+  - domain cache key with normalized:
+    - `resolved_domain`
+    - `extra_context`
+    - `requested_fields`
+- The input cache is checked at the beginning of `research_company(...)`
+- If the input cache misses, discovery runs and resolves the official domain
+- The domain cache is then checked after discovery
+- On domain-cache hit, the cached response is reused and the input alias cache is backfilled
+- On miss, the pipeline runs normally and the final response is stored in both caches
 
 ## What Runs in Parallel
 
@@ -318,7 +326,7 @@ Important note:
 
 ## Caching
 
-The backend uses a SQLite full-response cache.
+The backend uses a SQLite two-stage full-response cache.
 
 Why this approach:
 - easy to add
@@ -333,9 +341,14 @@ Where it is cached:
 - default file: `server/research_cache.sqlite3`
 
 How it is keyed:
-- normalized company name
-- normalized extra context
-- requested fields
+- input cache:
+  - normalized company name
+  - normalized extra context
+  - requested fields
+- domain cache:
+  - normalized resolved domain
+  - normalized extra context
+  - requested fields
 
 Default TTL:
 - `86400` seconds
@@ -343,11 +356,15 @@ Default TTL:
 
 Cache behavior:
 - repeated requests for the same normalized input can return immediately
+- alias requests that resolve to the same normalized domain can also return immediately after discovery
+- the domain cache is checked only after the official domain has been resolved
 - cache hits append a note like `Cache hit sqlite age_seconds=...`
+- domain cache hits append a note like `Cache hit domain=... age_seconds=...`
 - stale cache rows are ignored and removed on read
 
 Recommended use:
 - good for repeated demos, research retries, and UI refreshes
+- especially useful for company-name variants such as `Bobst` vs `Bobst Group`
 - especially useful because this backend depends on several external APIs and website fetches
 
 ## What Runs Sequentially
