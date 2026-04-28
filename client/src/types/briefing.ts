@@ -4,29 +4,36 @@ export type ConfidenceLevel = 'confirmed' | 'uncertain' | 'unconfirmed';
 export interface CompanySnapshot {
   officialName: string;
   parentCompany: string | null;
-  hqLocation: string;
-  hqCountry: string;
+  hqLocation: string | null;
+  hqCountry: string | null;
   founded: string | null;
   employeeRange: string | null;
   revenue: string | null;
   revenueConfidence: ConfidenceLevel;
   geographyStatus: GeographyStatus;
+  website: string | null;
+  linkedinUrl: string | null;
+  phone: string | null;
+  tags: string[];
+  siteEmails: string[];
   sources: string[];
 }
 
 export interface AftermarketFootprint {
   hasPortal: boolean | null;
   portalUrl: string | null;
-  description: string;
+  description: string | null;
   confidence: ConfidenceLevel;
+  emails: string[];
   sources: string[];
 }
 
 export interface BoothContact {
   name: string | null;
-  title: string;
+  title: string | null;
   email: string | null;
-  reasoning: string;
+  confidence: string | null;
+  reasoning: string | null;
   isVerified: boolean;
   sourceUrl: string | null;
   sourceLabel: string | null;
@@ -43,12 +50,12 @@ export interface RecentSignal {
 export interface BriefingCard {
   companyName: string;
   snapshot: CompanySnapshot;
-  productLine: string;
+  productLine: string | null;
   productLineSources: string[];
   aftermarket: AftermarketFootprint;
   boothContact: BoothContact;
   recentSignals: RecentSignal[];
-  openingLine: string;
+  openingLine: string | null;
   allSources: string[];
   generatedAt: string;
 }
@@ -62,4 +69,5 @@ export interface ProgressStep {
   message: string;
   status: ProgressStepStatus;
   type: ProgressStepType;
+  stage?: string;
 }

@@ -14,22 +14,35 @@ export function StickyActionBar({ briefing, onReset }: Props) {
     }
   };
   return (
-    <div className="fixed bottom-0 inset-x-0 bg-white border-t border-border z-40">
-      <div className="max-w-[1200px] mx-auto px-6 py-3 flex items-center justify-between gap-3">
+    <div className="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur border-t border-border z-40">
+      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-3">
+        <div className="grid grid-cols-2 gap-3">
         <button
           onClick={onReset}
-          className="inline-flex items-center gap-2 h-9 px-3 rounded-md border border-[hsl(var(--input))] text-[14px] text-body-ink hover:bg-[hsl(var(--surface))] transition"
+          className="inline-flex min-w-0 items-center justify-center gap-2 min-h-12 px-3 sm:px-4 rounded-xl border border-[hsl(var(--input))] bg-white text-[13px] sm:text-[14px] font-semibold text-body-ink hover:bg-[hsl(var(--surface))] transition text-center leading-tight shadow-sm"
         >
-          <ArrowLeft size={14} /> Search Another Company
+          <ArrowLeft size={15} className="shrink-0" />
+          <span>Search Another Company</span>
         </button>
         <button
           onClick={onExport}
-          className={`inline-flex items-center gap-2 h-9 px-4 rounded-md text-[14px] font-medium text-white transition ${
+          className={`inline-flex min-w-0 items-center justify-center gap-2 min-h-12 px-3 sm:px-4 rounded-xl text-[13px] sm:text-[14px] font-semibold text-white transition text-center leading-tight shadow-sm ${
             copied ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--primary))] hover:bg-[hsl(var(--primary-hover))]'
           }`}
         >
-          {copied ? <><Check size={14} /> Copied ✓</> : <><Download size={14} /> Export Briefing</>}
+          {copied ? (
+            <>
+              <Check size={15} className="shrink-0" />
+              <span>Copied</span>
+            </>
+          ) : (
+            <>
+              <Download size={15} className="shrink-0" />
+              <span>Export Briefing</span>
+            </>
+          )}
         </button>
+        </div>
       </div>
     </div>
   );

@@ -9,7 +9,7 @@ import { useEnrichStream } from '@/hooks/useEnrichStream';
 
 export default function Index() {
   const [submittedCompany, setSubmittedCompany] = useState<string | null>(null);
-  const { progressSteps, briefing, isLoading, error, startEnrich, reset, completedStepCount } = useEnrichStream();
+  const { progressSteps, briefing, isLoading, error, startEnrich, reset } = useEnrichStream();
 
   const handleSubmit = (company: string, context: string) => {
     setSubmittedCompany(company);
@@ -42,8 +42,6 @@ export default function Index() {
           <ProgressView
             companyName={submittedCompany}
             steps={progressSteps}
-            briefing={briefing}
-            completedStepCount={completedStepCount}
           />
         )}
         {!error && showResult && briefing && <BriefingCard b={briefing} />}

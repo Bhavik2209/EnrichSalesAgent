@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { BriefingCard, ProgressStep, ProgressStepType } from '@/types/briefing';
-import { parseResearchResponse } from '@/utils/research';
+import { parseResearchPayload, parseResearchResponse, type ResearchStreamEvent } from '@/utils/research';
 
 const MOCK_KRONES: BriefingCard = {
   companyName: 'Krones AG',
@@ -14,6 +14,11 @@ const MOCK_KRONES: BriefingCard = {
     revenue: '~€4.6B (2023)',
     revenueConfidence: 'confirmed',
     geographyStatus: 'target',
+    website: 'https://www.krones.com/en/',
+    linkedinUrl: null,
+    phone: null,
+    tags: ['bottling lines', 'packaging machinery', 'process technology'],
+    siteEmails: [],
     sources: ['https://www.krones.com/en/company/krones-group.php'],
   },
   productLine:
@@ -25,12 +30,14 @@ const MOCK_KRONES: BriefingCard = {
     description:
       'Krones operates a digital services division called Syskron offering a customer portal, remote monitoring, and parts ordering. The portal is clearly customer-facing and aftermarket-focused.',
     confidence: 'confirmed',
+    emails: [],
     sources: ['https://www.krones.com/en/services/'],
   },
   boothContact: {
     name: null,
     title: 'VP of Digital Services / Head of Lifecycle Services',
     email: null,
+    confidence: null,
     reasoning:
       'Krones has a dedicated Lifecycle Services and Digital Services division. A VP or Director from that unit owns the aftermarket conversation and is a more productive contact than a regional sales rep.',
     isVerified: false,
@@ -109,18 +116,21 @@ function getApiBaseUrl(): string {
   return (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').trim();
 }
 
-const LIVE_PROGRESS_STEPS: MockStep[] = [
-  { id: '1', message: 'Starting research for {COMPANY}...', type: 'search' },
-  { id: '2', message: 'Resolving official website and company identity...', type: 'search' },
-  { id: '3', message: 'Pulling company profile and about-page details...', type: 'fetch' },
-  { id: '4', message: 'Extracting snapshot fields like HQ, employees, and revenue...', type: 'fetch' },
-  { id: '5', message: 'Classifying geography and operating footprint...', type: 'fetch' },
-  { id: '6', message: 'Checking service, support, and portal signals...', type: 'fetch' },
-  { id: '7', message: 'Aftermarket footprint analysis complete...', type: 'fetch' },
-  { id: '8', message: 'Estimating the best booth contact...', type: 'person' },
-  { id: '9', message: 'Returning verified contact or best-fit role...', type: 'person' },
-  { id: '10', message: 'Synthesizing the briefing card...', type: 'synthesis' },
-];
+function mapStageToType(stage: string | undefined): ProgressStepType {
+  const value = (stage ?? '').toLowerCase();
+  if (value.includes('people')) return 'person';
+  if (value.includes('opening_line') || value.includes('research.complete')) return 'synthesis';
+  if (value.includes('news')) return 'news';
+  if (value.includes('discovery') || value.includes('cache')) return 'search';
+  return 'fetch';
+}
+
+function mapStatusToStepStatus(status: string | undefined): ProgressStep['status'] {
+  const value = (status ?? '').toLowerCase();
+  if (value === 'error') return 'failed';
+  if (value === 'info') return 'active';
+  return 'done';
+}
 
 export function useEnrichStream() {
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
@@ -174,6 +184,7 @@ export function useEnrichStream() {
             message: s.message.replace('{COMPANY}', company),
             type: s.type,
             status: 'active',
+            stage: s.type,
           },
         ]);
         await new Promise(r => setTimeout(r, 700));
@@ -191,39 +202,13 @@ export function useEnrichStream() {
     }
 
     // Real API path
-    let intervalId: number | null = null;
     try {
       const base = getApiBaseUrl();
-      let progressIndex = 0;
-      const advanceProgress = () => {
-        if (token.cancelled || progressIndex >= LIVE_PROGRESS_STEPS.length) return;
-        const step = LIVE_PROGRESS_STEPS[progressIndex];
-        setProgressSteps(prev => [
-          ...prev,
-          {
-            id: step.id,
-            timestamp: nowStamp(),
-            message: step.message.replace('{COMPANY}', companyName),
-            type: step.type,
-            status: 'done',
-          },
-        ]);
-        progressIndex += 1;
-        setCompletedStepCount(progressIndex);
-      };
-
-      advanceProgress();
-      intervalId = window.setInterval(advanceProgress, 1500);
-
-      const res = await fetch(`${base}/research`, {
+      const res = await fetch(`${base}/research/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ company_name: companyName, extra_context: context }),
       });
-
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
-      }
       if (!res.ok) {
         let message = `Request failed (${res.status})`;
         try {
@@ -236,40 +221,70 @@ export function useEnrichStream() {
         }
         throw new Error(message);
       }
-
-      const parsedBriefing = await parseResearchResponse(res);
-      if (token.cancelled) return;
-      setProgressSteps(prev => {
-        const completedIds = new Set(prev.map(step => step.id));
-        const remaining = LIVE_PROGRESS_STEPS
-          .filter(step => !completedIds.has(step.id))
-          .map(step => ({
-            id: step.id,
-            timestamp: nowStamp(),
-            message: step.message.replace('{COMPANY}', companyName),
-            type: step.type,
-            status: 'done' as const,
-          }));
-
-        return [
-          ...prev,
-          ...remaining,
-          {
-            id: 'done',
-            timestamp: nowStamp(),
-            message: 'Briefing complete. Ready.',
-            type: 'done' as ProgressStepType,
-            status: 'done',
-          },
-        ];
-      });
-      setCompletedStepCount(LIVE_PROGRESS_STEPS.length + 1);
-      setBriefing(parsedBriefing);
-      setIsLoading(false);
-    } catch (e: unknown) {
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
+      const reader = res.body?.getReader();
+      if (!reader) {
+        const parsedBriefing = await parseResearchResponse(res);
+        if (token.cancelled) return;
+        setBriefing(parsedBriefing);
+        setIsLoading(false);
+        return;
       }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let eventIndex = 0;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const event = JSON.parse(trimmed) as ResearchStreamEvent;
+          if (token.cancelled) return;
+
+          if (event.type === 'progress') {
+            eventIndex += 1;
+            const message = event.message?.trim() || 'Working...';
+            setProgressSteps(prev => [
+              ...prev,
+              {
+                id: `${event.stage ?? 'progress'}-${eventIndex}`,
+                timestamp: nowStamp(),
+                message,
+                type: mapStageToType(event.stage),
+                status: mapStatusToStepStatus(event.status),
+                stage: event.stage,
+              },
+            ]);
+            setCompletedStepCount(eventIndex);
+          } else if (event.type === 'result' && event.payload) {
+            const parsedBriefing = parseResearchPayload(event.payload);
+            setProgressSteps(prev => [
+              ...prev,
+              {
+                id: 'done',
+                timestamp: nowStamp(),
+                message: 'Briefing complete. Ready.',
+                type: 'done',
+                status: 'done',
+                stage: 'research.complete',
+              },
+            ]);
+            setCompletedStepCount((count) => count + 1);
+            setBriefing(parsedBriefing);
+            setIsLoading(false);
+            return;
+          } else if (event.type === 'error') {
+            throw new Error(event.message || 'Something went wrong');
+          }
+        }
+      }
+    } catch (e: unknown) {
       if (!token.cancelled) {
         setError(e instanceof Error ? e.message : 'Something went wrong');
         setIsLoading(false);

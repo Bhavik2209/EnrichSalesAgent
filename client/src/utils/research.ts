@@ -24,6 +24,16 @@ interface ResearchResponse {
   notes?: string[];
 }
 
+export interface ResearchStreamEvent {
+  type: 'progress' | 'result' | 'error';
+  timestamp?: string;
+  stage?: string;
+  status?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+  payload?: ResearchResponse;
+}
+
 function asString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -58,7 +68,7 @@ function mapRevenueConfidence(source: string | null, revenue: string | null): Co
 function buildSnapshot(data: Record<string, unknown>, fieldSources: Record<string, unknown>, fallbackCompanyName: string): CompanySnapshot {
   const hqCity = asString(data.hq_city);
   const hqCountry = asString(data.hq_country);
-  const hqLocation = [hqCity, hqCountry].filter(Boolean).join(', ') || 'Unknown';
+  const hqLocation = [hqCity, hqCountry].filter(Boolean).join(', ') || null;
   const revenue = asString(data.revenue);
   const revenueSource = asString(fieldSources.revenue);
 
@@ -66,12 +76,17 @@ function buildSnapshot(data: Record<string, unknown>, fieldSources: Record<strin
     officialName: asString(data.official_name) ?? fallbackCompanyName,
     parentCompany: asString(data.parent_company),
     hqLocation,
-    hqCountry: hqCountry ?? 'Unknown',
+    hqCountry,
     founded: asString(data.founded_year),
-    employeeRange: asString(data.employee_count),
+    employeeRange: asString(data.employee_count_display) ?? asString(data.employee_count),
     revenue,
     revenueConfidence: mapRevenueConfidence(revenueSource, revenue),
     geographyStatus: mapGeographyStatus(asString(data.hq_geography_flag)),
+    website: asString(data.website),
+    linkedinUrl: asString(data.company_linkedin_url),
+    phone: asString(data.company_phone),
+    tags: asStringArray(data.company_tags),
+    siteEmails: asStringArray(data.site_emails),
     sources: [
       ...asStringArray([data.source_url]),
       ...asStringArray([data.website]),
@@ -92,13 +107,14 @@ function buildAftermarket(data: Record<string, unknown>): AftermarketFootprint {
       ? 'Aftermarket footprint detected.'
       : footprint === false
         ? 'No aftermarket footprint detected.'
-        : 'Aftermarket footprint is still uncertain from the available sources.');
+        : null);
 
   return {
     hasPortal: footprint,
     portalUrl: evidenceUrl,
     description: aftermarketDescription,
     confidence: footprint === null ? 'uncertain' : 'confirmed',
+    emails: asStringArray(data.aftermarket_site_emails),
     sources: asStringArray([
       data.parts_page,
       data.service_page,
@@ -114,18 +130,17 @@ function buildBoothContact(data: Record<string, unknown>): BoothContact {
   const sourceLabel = asString(data.target_person_source);
   const title =
     asString(data.target_person_title) ??
-    asString(data.suggested_target_title) ??
-    'Service / Aftermarket leader';
+    asString(data.suggested_target_title);
   const name = asString(data.target_person_name);
   const reasoning =
     asString(data.suggested_target_title_reasoning) ??
-    (sourceLabel ? `Verified contact identified via ${sourceLabel}.` : null) ??
-    'Best-fit contact inferred from the available aftermarket and company signals.';
+    (sourceLabel ? `Verified contact identified via ${sourceLabel}.` : null);
 
   return {
     name,
     title,
     email,
+    confidence: asString(data.target_person_confidence),
     reasoning,
     isVerified: Boolean(name && (email || sourceUrl || sourceLabel)),
     sourceUrl,
@@ -151,8 +166,7 @@ function buildRecentSignals(data: Record<string, unknown>): RecentSignal[] {
     .filter((item) => Boolean(item.sourceUrl));
 }
 
-export async function parseResearchResponse(response: Response): Promise<BriefingCard> {
-  const payload = (await response.json()) as ResearchResponse;
+export function parseResearchPayload(payload: ResearchResponse): BriefingCard {
   const data = (payload.data ?? {}) as Record<string, unknown>;
   const fieldSources = (payload.field_sources ?? {}) as Record<string, unknown>;
   const companyName =
@@ -167,16 +181,18 @@ export async function parseResearchResponse(response: Response): Promise<Briefin
     snapshot,
     productLine:
       asString(data.what_they_make) ??
-      asString(data.description) ??
-      'Product and company description were not available from the research sources.',
+      asString(data.description),
     productLineSources: asStringArray([data.source_url, payload.resolved_domain]),
     aftermarket: buildAftermarket(data),
     boothContact: buildBoothContact(data),
     recentSignals,
-    openingLine:
-      asString(data.personalized_opening_line) ??
-      `I wanted to learn more about ${companyName}'s service and aftermarket priorities this year.`,
+    openingLine: asString(data.personalized_opening_line),
     allSources: Array.from(new Set(asStringArray(payload.sources))),
     generatedAt: new Date().toISOString(),
   };
+}
+
+export async function parseResearchResponse(response: Response): Promise<BriefingCard> {
+  const payload = (await response.json()) as ResearchResponse;
+  return parseResearchPayload(payload);
 }

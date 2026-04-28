@@ -3,7 +3,9 @@ import { StatusBadge } from './StatusBadge';
 import { SourceChip } from './SourceChip';
 
 export function BoothContact({ data }: { data: BC }) {
-  const hasDirectContact = Boolean(data.name || data.email || data.sourceUrl);
+  const hasDirectContact = Boolean(data.name || data.email || data.sourceUrl || data.title);
+  if (!hasDirectContact) return null;
+
   const badge = data.isVerified
     ? { variant: 'success' as const, label: 'Verified ✓' }
     : hasDirectContact
@@ -18,7 +20,7 @@ export function BoothContact({ data }: { data: BC }) {
         <StatusBadge variant={badge.variant}>{badge.label}</StatusBadge>
       </div>
 
-      {data.name && (
+      {data.name && data.title && (
         <div className="text-[14px] text-secondary-ink mt-0.5">{data.title}</div>
       )}
 
@@ -29,6 +31,10 @@ export function BoothContact({ data }: { data: BC }) {
         >
           {data.email}
         </a>
+      )}
+
+      {data.confidence && (
+        <div className="mt-2 text-[12px] text-secondary-ink">Confidence: {data.confidence}%</div>
       )}
 
       {data.reasoning && <p className="text-[13px] text-secondary-ink italic mt-3 leading-relaxed">{data.reasoning}</p>}

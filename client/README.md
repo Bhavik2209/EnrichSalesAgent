@@ -1,6 +1,6 @@
 # EnrichSalesAgent
 
-**Tradeshow intelligence for industrial CEOs — built by Industrility.**
+**Tradeshow intelligence for industrial CEOs.**
 
 EnrichSalesAgent turns a company name into a decision-ready briefing card in under 60 seconds. Type a name, hit **Enrich**, and walk up to the booth knowing who they are, what they make, where they sell, and who to ask for.
 
@@ -32,7 +32,6 @@ EnrichSalesAgent turns a company name into a decision-ready briefing card in und
 - **Vitest** for tests
 - Lightweight research client (`src/hooks/useEnrichStream.ts`) — no external data client required
 
-No UI kit dependency for the briefing surface — every card is hand-crafted to match the Industrility brand (white background, Inter + IBM Plex Mono, `#F97316` accent).
 
 ---
 
@@ -99,7 +98,7 @@ src/
     ProgressView.tsx      Progress + preview layout
     StickyActionBar.tsx   Footer actions (new search, export)
     ErrorView.tsx         Network / timeout recovery
-    Header.tsx            Industrility header (BETA badge)
+    Header.tsx            header (BETA badge)
   hooks/
     useEnrichStream.ts    Research request client + mock mode driver
   pages/
@@ -143,4 +142,4 @@ These rules live in the corresponding components under `src/components/BriefingC
 
 ## License
 
-Proprietary — © Industrility. All rights reserved.
+Proprietary — © All rights reserved.
