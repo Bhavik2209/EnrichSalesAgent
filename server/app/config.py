@@ -20,6 +20,26 @@ def _parse_key_list(value: str) -> list[str]:
 			keys.append(key)
 	return keys
 
+
+def _parse_numbered_key_env(prefix: str) -> list[str]:
+	keyed_items: list[tuple[int, str]] = []
+	for env_name, env_value in os.environ.items():
+		if not env_name.startswith(prefix):
+			continue
+		suffix = env_name[len(prefix) :]
+		if not suffix.isdigit():
+			continue
+		key = str(env_value or "").strip()
+		if not key:
+			continue
+		keyed_items.append((int(suffix), key))
+	keyed_items.sort(key=lambda item: item[0])
+	keys: list[str] = []
+	for _, key in keyed_items:
+		if key not in keys:
+			keys.append(key)
+	return keys
+
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
@@ -46,6 +66,9 @@ CUFINDER_API_KEYS = _parse_key_list(os.getenv("CUFINDER_API_KEYS", ""))
 primary_cufinder_keys = _parse_key_list(CUFINDER_API_KEY)
 if primary_cufinder_keys:
 	CUFINDER_API_KEYS = primary_cufinder_keys + [key for key in CUFINDER_API_KEYS if key not in primary_cufinder_keys]
+legacy_cufinder_keys = _parse_numbered_key_env("CUFINDER_API_KEY")
+if legacy_cufinder_keys:
+	CUFINDER_API_KEYS = CUFINDER_API_KEYS + [key for key in legacy_cufinder_keys if key not in CUFINDER_API_KEYS]
 
 HUNTER_API_KEYS = _parse_key_list(os.getenv("HUNTER_API_KEYS", ""))
 if HUNTER_API_KEY:

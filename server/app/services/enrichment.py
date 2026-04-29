@@ -171,6 +171,29 @@ def _normalize_lookup_domain(value: str | None) -> str:
 	return domain.strip()
 
 
+def _humanize_company_query(value: str | None) -> str:
+	if not value:
+		return ""
+	text = re.sub(r"\s+", " ", str(value).strip())
+	if not text:
+		return ""
+	if "." in text:
+		return ""
+	text = re.sub(r"[_\-]+", " ", text)
+	text = re.sub(r"\s+", " ", text).strip(" ,")
+	return text
+
+
+def _build_cufinder_queries(company_name: str, domain: str) -> list[str]:
+	queries: list[str] = []
+	domain_query = _normalize_lookup_domain(domain)
+	company_query = _humanize_company_query(company_name)
+	for candidate in (domain_query, company_query):
+		if candidate and candidate not in queries:
+			queries.append(candidate)
+	return queries
+
+
 def _extract_parent_company_from_description(text: str | None) -> str | None:
 	if not text:
 		return None
@@ -287,6 +310,25 @@ def _is_cufinder_credit_error(payload: dict[str, Any]) -> bool:
 	)
 
 
+def _extract_cufinder_error_payload(exc: Exception) -> dict[str, Any]:
+	response = getattr(exc, "response", None)
+	if response is None:
+		return {}
+	try:
+		parsed = response.json()
+		return parsed if isinstance(parsed, dict) else {}
+	except Exception:
+		return {}
+
+
+def _is_cufinder_retryable_status(status_code: int | None, payload: dict[str, Any]) -> bool:
+	if status_code in {401, 403, 429}:
+		return True
+	if status_code == 400 and _is_cufinder_credit_error(payload):
+		return True
+	return False
+
+
 def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
 	last_error: Exception | None = None
 	for index, api_key in enumerate(CUFINDER_API_KEYS, start=1):
@@ -311,8 +353,15 @@ def _post_cufinder(endpoint: str, query: str) -> dict[str, Any]:
 		except Exception as exc:
 			last_error = exc
 			status_code = getattr(getattr(exc, "response", None), "status_code", None)
-			if status_code in {401, 403, 429}:
-				logger.warning("CUFinder key %s/%s exhausted or unauthorized for endpoint %s", index, len(CUFINDER_API_KEYS), endpoint)
+			error_payload = _extract_cufinder_error_payload(exc)
+			if _is_cufinder_retryable_status(status_code, error_payload):
+				logger.warning(
+					"CUFinder key %s/%s exhausted or unauthorized for endpoint %s (status=%s)",
+					index,
+					len(CUFINDER_API_KEYS),
+					endpoint,
+					status_code,
+				)
 				continue
 			raise
 
@@ -360,7 +409,7 @@ def enrich_from_cufinder(company_name: str, domain: str) -> dict:
 		return {}
 
 	endpoint = "https://api.cufinder.io/v2/enc"
-	queries = [q for q in [domain, company_name] if q]
+	queries = _build_cufinder_queries(company_name, domain)
 	for query in queries:
 		try:
 			parsed = _post_cufinder(endpoint, query)
@@ -380,7 +429,7 @@ def get_cufinder_revenue(company_name: str, domain: str) -> str | None:
 		return None
 
 	endpoint = "https://api.cufinder.io/v2/car"
-	queries = [q for q in [domain, company_name] if q]
+	queries = _build_cufinder_queries(company_name, domain)
 	for query in queries:
 		try:
 			parsed = _post_cufinder(endpoint, query)
@@ -401,7 +450,7 @@ def get_cufinder_employee_count(company_name: str, domain: str) -> str | None:
 		return None
 
 	endpoint = "https://api.cufinder.io/v2/cec"
-	queries = [q for q in [domain, company_name] if q]
+	queries = _build_cufinder_queries(company_name, domain)
 	for query in queries:
 		try:
 			parsed = _post_cufinder(endpoint, query)
