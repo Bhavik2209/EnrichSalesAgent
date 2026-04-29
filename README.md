@@ -188,22 +188,6 @@ The final response includes:
 
 The important design choice here is that each major field can be traced back to the source that produced it.
 
-## Why The Backend Matters Most
-
-The frontend is mostly a simple operator surface:
-
-- input form
-- loading/logs view
-- final briefing card with summary audio playback
-
-The hard part of the product lives in the backend:
-
-- provider ordering
-- fallback rules
-- not overwriting stronger evidence with weaker evidence
-- surfacing uncertainty honestly
-- caching expensive research
-- keeping source provenance visible
 
 ## Repo Structure
 
